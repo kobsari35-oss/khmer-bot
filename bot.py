@@ -20,8 +20,6 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
-
-# Username Admin (មាន \ ដើម្បីកុំឱ្យខូច Link)
 ADMIN_USERNAME = "@Samross\_Ph\_Care"
 
 GROQ_MODEL_CHAT = "llama-3.3-70b-versatile"
@@ -39,18 +37,33 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ================= 2. PROMPTS (SMARTER AI) =================
+# ================= 2. PROMPTS (SUPER SMART WITH DICTIONARY) =================
 
-# 🔥 UPDATE: បន្ថែមឱ្យស្គាល់ Khmer Romanized / Slang
+# 🔥 UPDATE: ខ្ញុំបានដាក់ "វចនានុក្រម" ចូលក្នុងនេះ ដើម្បីឱ្យវាស្គាល់ពាក្យកាត់ច្បាស់
 PROMPT_CONVERSATION = """
 You are an expert Trilingual Translator (Khmer, English, Chinese).
 
 CRITICAL INSTRUCTIONS:
-1. **INPUT HANDLING:**
-   - You MUST understand **Khmer Romanized / Khmernglish** (e.g., "nh tv" = "I go", "ot ei te" = "No problem", "sml" = "soup").
-   - If the user uses slang or abbreviations (e.g., "u", "r", "b", "xd"), interpret them naturally.
+1. **DECODE KHMER SLANG / ROMANIZED (Khmernglish):**
+   You MUST use this dictionary to understand abbreviations:
+   - "nh" / "ny" = ខ្ញុំ (I/Me)
+   - "tv" / "tou" = ទៅ (Go)
+   - "dae" = ដែរ (Also/Too)
+   - "hx" / "hz" = ហើយ (Already/Done/Past tense marker)
+   - "b" = បង (Bro/Sis/You)
+   - "o" / "oun" = អូន (Sis/Darling)
+   - "ot" / "ort" = អត់ (No/Not)
+   - "nv" = នៅ (At/Stay/Are you...?)
+   - "kl" = ខ្លះ (Some)
+   - "mech" = ម៉េច (How)
+   - "jg" / "jong" = ចង់ (Want)
+   - "jm" = ចាំ (Wait)
+   - "sml" = សម្ល (Soup)
+   - "bai" / "bay" = បាយ (Rice/Food)
 
-2. **ACCURACY:** Translate the meaning into Standard English, Chinese, and Khmer Script.
+2. **ACCURACY:** 
+   - Translate the meaning naturally.
+   - Ex: "maybe nh tv chinatown dae hx b" -> "Maybe I will go to Chinatown too, bro." (Do not translate 'hx' as eat).
 
 3. **PRONUNCIATION:** 
    - For English & Chinese, write the sound using Khmer letters.
@@ -132,7 +145,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
     if chat_id not in load_users():
-        # Admin Alert Fix
         if str(chat_id) != str(ADMIN_ID):
             full_name = user.full_name
             username = f"@{user.username}" if user.username else "No Username"
@@ -142,7 +154,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except: pass
         save_user_to_file(chat_id)
 
-    # សារស្វាគមន៍ (Fixed Link)
     msg = (
         f"សួស្តី {user.first_name}! 👋\n"
         f"សូមស្វាគមន៍មកកាន់ **Bot ជំនួយការភាសា ៣ (ខ្មែរ-អង់គ្លេស-ចិន)** 🤖✨\n\n"
@@ -243,11 +254,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_user_to_file(chat_id)
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         
-        # Translate
         reply = await get_ai_response(PROMPT_CONVERSATION, text)
         await update.message.reply_text(reply)
 
-        # Speak
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
         await send_tts_audio(context, chat_id, reply)
 
@@ -263,5 +272,5 @@ if __name__ == '__main__':
         app.add_handler(MessageHandler(filters.VOICE, handle_voice))
         app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
         
-        print("✅ Bot is running (Supports Khmernglish)...")
+        print("✅ Bot is running with SUPER SMART DICTIONARY...")
         app.run_polling(drop_pending_updates=True)
