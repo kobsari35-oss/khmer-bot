@@ -2,4 +2,4 @@ python-telegram-bot
 groq
 python-dotenv
 flask
-gTTS
+schedule
