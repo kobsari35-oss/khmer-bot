@@ -6,7 +6,7 @@ from datetime import time
 from dotenv import load_dotenv
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from groq import Groq
 
@@ -42,21 +42,31 @@ logging.basicConfig(
 # ================= 2. PROMPTS =================
 
 PROMPT_KHMER_LEARNER = """
-You are an expert Language Tutor for Khmer speakers.
+You are an expert Multi-Language Tutor (English & Chinese) for Khmer speakers.
+
 YOUR TASK:
-1. Correct Grammar (English/Chinese).
-2. Provide Phonetics in KHMER SCRIPT.
-3. Provide Translation in Khmer.
-4. Provide a Usage Example.
+1. Analyze the user's input.
+2. Provide the ENGLISH translation/correction with Khmer Phonetics.
+3. Provide the CHINESE translation with PINYIN and Khmer Phonetics.
+4. Provide the KHMER meaning.
+5. **CRITICAL:** ALWAYS provide a Usage Example in ALL 3 languages, INCLUDING PINYIN for Chinese.
 
 OUTPUT FORMAT:
 --------------------------------
-✅ **Corrected:** [Correct Sentence]
-🗣️ **អានថា:** [SOUND IN KHMER LETTERS]
+🇺🇸 **English:** [English Sentence]
+🗣️ **អានថា:** [Sound of English in Khmer Script]
+--------------------------------
+🇨🇳 **Chinese:** [Chinese Characters]
+🎼 **Pinyin:** [Pinyin]
+🗣️ **អានថា:** [Sound of Chinese in Khmer Script]
 --------------------------------
 🇰🇭 **ប្រែថា:** [Khmer Meaning]
 --------------------------------
-📝 **ឧទាហរណ៍:** [Example sentence]
+📝 **ឧទាហរណ៍ (Example):**
+🇺🇸 [English Example Sentence]
+🇨🇳 [Chinese Example Sentence]
+🎼 [Pinyin for Example]
+🇰🇭 [Khmer Example Sentence]
 --------------------------------
 """
 
@@ -136,10 +146,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
     save_user_to_file(chat_id)
-    if chat_id not in USER_MODES: USER_MODES[chat_id] = 'learner'
+    
+    if chat_id not in USER_MODES: 
+        USER_MODES[chat_id] = 'learner'
 
-    msg = (f"Hello {user.first_name}! 👋\nWelcome to AI Language Bot.")
-    await update.message.reply_text(msg, reply_markup=get_main_keyboard())
+    msg = (
+        f"👋 **សួស្តី {user.first_name}! សូមស្វាគមន៍មកកាន់ AI Language Tutor!**\n\n"
+        "👨‍🏫 **ខ្ញុំអាចជួយអ្នករៀនភាសា អង់គ្លេស និង ចិន។**\n\n"
+        "📚 **របៀបប្រើប្រាស់:**\n"
+        "1️⃣ **🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳 (សិស្សរៀនភាសា)**\n"
+        "• វាយជាខ្មែរ ឬអង់គ្លេស ខ្ញុំនឹងបកប្រែជា **អង់គ្លេស និង ចិន (មាន Pinyin)** ព្រមទាំងប្រាប់របៀបអាន។\n\n"
+        "2️⃣ **🇺🇸 -> 🇰🇭 (Foreigner)**\n"
+        "• For foreigners learning Khmer.\n\n"
+        "👇 **សូមចុចប៊ូតុងខាងក្រោមដើម្បីចាប់ផ្តើម!**"
+    )
+    
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard())
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = ' '.join(context.args)
@@ -162,12 +184,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳":
         USER_MODES[chat_id] = 'learner'
-        await update.message.reply_text("✅ Mode: Khmer Learner")
+        await update.message.reply_text("✅ **Mode: Khmer Learner**\nសរសេរមកបាន! ខ្ញុំនឹងចេញទាំង អង់គ្លេស និង ចិន។", parse_mode=ParseMode.MARKDOWN)
     elif text == "🇺🇸 -> 🇰🇭 (Foreigner)":
         USER_MODES[chat_id] = 'foreigner'
-        await update.message.reply_text("✅ Mode: Foreigner Standard")
+        await update.message.reply_text("✅ **Mode: Foreigner Standard**", parse_mode=ParseMode.MARKDOWN)
     elif text == "📩 Feedback": 
-        await update.message.reply_text("Type: `/feedback [msg]`")
+        await update.message.reply_text("Type: `/feedback [msg]`", parse_mode=ParseMode.MARKDOWN)
     elif text == "❓ Help/ជំនួយ": 
         await start(update, context)
     else:
@@ -179,7 +201,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= 6. MAIN EXECUTION =================
 
 if __name__ == '__main__':
-    # 1. ដំណើរការ Web Server (កុំឱ្យ Render បិទ)
+    # កុំខ្វល់ពី Error លើ Windows, លើ Render វានឹងដំណើរការ
     if keep_alive:
         keep_alive()
 
@@ -188,23 +210,15 @@ if __name__ == '__main__':
     else:
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
         
-        # Add Handlers
         app.add_handler(CommandHandler('start', start))
         app.add_handler(CommandHandler('feedback', feedback_command))
         app.add_handler(CommandHandler('broadcast', broadcast))
         app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
         
-        # Schedule Jobs (UTC TIME)
-        # Cambodia is UTC+7. So we subtract 7 hours from desired KH time.
         jq = app.job_queue
-        
-        # 8:00 AM KH = 1:00 AM UTC
+        # Schedule Times (UTC)
         jq.run_daily(send_scheduled_alert, time=time(1, 0), data="☀️ អរុណសួស្តី! Good Morning!", name="morning")
-        
-        # 1:00 PM KH = 6:00 AM UTC
         jq.run_daily(send_scheduled_alert, time=time(6, 0), data="☕ ទិវាសួស្តី! Good Afternoon!", name="afternoon")
-        
-        # 8:00 PM KH = 1:00 PM UTC
         jq.run_daily(send_scheduled_alert, time=time(13, 0), data="🌙 រាត្រីសួស្តី! Good Evening!", name="evening")
 
         print("✅ Bot is running with Scheduler...")
