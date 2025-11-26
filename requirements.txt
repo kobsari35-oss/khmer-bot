@@ -3,5 +3,3 @@ groq
 python-dotenv
 flask
 pytz
-pillow
-pytesseract
