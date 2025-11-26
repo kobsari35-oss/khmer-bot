@@ -9,11 +9,14 @@ from io import BytesIO
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 from groq import Groq
-
-from PIL import Image
-import pytesseract
 
 # ព្យាយាម Import keep_alive
 try:
@@ -32,9 +35,9 @@ GROQ_MODEL_CHAT = "llama-3.3-70b-versatile"
 USERS_FILE = "users.json"
 
 # USER_MODES: {chat_id: 'auto' | 'learner' | 'foreigner'}
-USER_MODES: dict[int, str] = {}
+USER_MODES = {}
 # USER_STATS: {chat_id: message_count}
-USER_STATS: dict[int, int] = {}
+USER_STATS = {}
 
 # ----- Logging to console + file -----
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -61,6 +64,21 @@ if GROQ_API_KEY:
 else:
     client = None
     logger.warning("⚠️ GROQ_API_KEY is missing! AI responses will not work.")
+
+# ----- Optional OCR libraries (Pillow + pytesseract) -----
+try:
+    from PIL import Image
+    import pytesseract
+
+    OCR_AVAILABLE = True
+    logger.info("OCR libraries loaded successfully (Pillow + pytesseract).")
+except Exception as e:
+    Image = None
+    pytesseract = None
+    OCR_AVAILABLE = False
+    logger.warning(
+        "OCR libraries not available. Screenshot translation disabled. Error: %s", e
+    )
 
 # ================= 2. PROMPTS =================
 
@@ -111,7 +129,8 @@ OUTPUT FORMAT:
 
 # ================= 3. HELPER FUNCTIONS =================
 
-def load_users() -> set[int]:
+
+def load_users():
     if not os.path.exists(USERS_FILE):
         return set()
     with open(USERS_FILE, "r", encoding="utf-8") as f:
@@ -122,7 +141,7 @@ def load_users() -> set[int]:
             return set()
 
 
-def save_user_to_file(chat_id: int) -> None:
+def save_user_to_file(chat_id):
     users = load_users()
     if chat_id not in users:
         users.add(chat_id)
@@ -133,14 +152,13 @@ def save_user_to_file(chat_id: int) -> None:
             logger.error(f"Failed to save users file: {e}")
 
 
-def get_main_keyboard() -> ReplyKeyboardMarkup:
+def get_main_keyboard():
     keyboard = [
         [KeyboardButton("🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳"), KeyboardButton("🇺🇸 -> 🇰🇭 (Foreigner)")],
         [KeyboardButton("📩 Feedback"), KeyboardButton("❓ Help/ជំនួយ")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ----- Simple language-based mode detection -----
 
 def detect_mode_from_text(text: str) -> str:
     """
@@ -211,7 +229,9 @@ async def send_long_message(update: Update, text: str) -> None:
         chunk = text[i : i + max_len]
         await update.message.reply_text(chunk)
 
+
 # ================= 4. SCHEDULING ALERT =================
+
 
 async def send_scheduled_alert(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends automatic messages to all users"""
@@ -224,7 +244,9 @@ async def send_scheduled_alert(context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.warning(f"Failed to send scheduled alert to {uid}: {e}")
 
+
 # ================= 5. HANDLERS =================
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -244,7 +266,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "2️⃣ **🇺🇸 -> 🇰🇭 (Foreigner)**\n"
         "• For foreigners learning Khmer.\n\n"
         "📌 Mode ដំបូងនឹងកំណត់ស្វ័យប្រវត្តិតាមភាសាសារ​អ្នក។\n"
-        "📷 អាចផ្ញើ screenshot/រូបភាព មានអក្សរ ដើម្បីបកប្រែបានផងដែរ។\n"
+        "📷 អាចផ្ញើ screenshot/រូបភាព មានអក្សរ ដើម្បីបកប្រែបានផងដែរ (បើ server មាន OCR).\n"
         "👇 **សូមចុចប៊ូតុងខាងក្រោម ដើម្បីចាប់ផ្តើម!**"
     )
 
@@ -262,7 +284,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "   • Bot នឹងបកប្រែ តាម mode (learner / foreigner).\n\n"
         "2️⃣ Screenshot / Image:\n"
         "   • ផ្ញើរូបភាព/screenshot ដែលមានអក្សរ\n"
-        "   • Bot នឹងអានអក្សរ (OCR) ហើយបកប្រែដូចសារ text។\n\n"
+        "   • Bot នឹងអានអក្សរ (OCR) ហើយបកប្រែដូចសារ text "
+        "(បើ server មាន OCR support).\n\n"
         "3️⃣ ផ្ញើមតិយោបល់:\n"
         "   • `/feedback សារ​របស់​អ្នក`\n\n"
         "4️⃣ ប្ដូរ Mode ដោយ command:\n"
@@ -279,7 +302,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "ℹ️ **About AI Language Tutor Bot**\n\n"
         "• ជួយសិស្សខ្មែរ រៀន អង់គ្លេស និង ចិន (មាន Pinyin និងសូរ​អានជាខ្មែរ).\n"
         "• ជួយ Foreigner បកប្រែ English/Chinese ទៅ Khmer (script + romanization + tips).\n"
-        "• Auto-detect mode + Screenshot OCR translate.\n\n"
+        "• Auto-detect mode + Screenshot OCR translate (បើ server មាន OCR).\n\n"
         "Commands សំខាន់ៗ:\n"
         "• `/start`  – ចាប់ផ្តើម\n"
         "• `/help`   – របៀបប្រើ\n"
@@ -415,9 +438,18 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
-# ----- NEW: handle photo (screenshot) with OCR -----
+
+# ----- Photo handler (screenshot OCR) -----
+
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not OCR_AVAILABLE:
+        await update.message.reply_text(
+            "⚠️ Screenshot translation មិនទាន់អាចប្រើបានទេ ព្រោះ server មិនទាន់ដំឡើង OCR library (Pillow/pytesseract/Tesseract).\n"
+            "សូមទាក់ទង admin ប្រសិនបើត្រូវការអោយបើកមុខងារនេះ។"
+        )
+        return
+
     if not update.message or not update.message.photo:
         return
 
@@ -439,7 +471,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        # អាចកំណត់ lang ដូចជា 'eng+chi_sim' បើ install models រួច
+        # Note: need language data installed on server if specifying lang
         ocr_text = pytesseract.image_to_string(image)
         logger.info(f"OCR text from image (first 100 chars): {ocr_text[:100]!r}")
     except Exception as e:
@@ -455,6 +487,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
+    chat_id = update.effective_chat.id
     save_user_to_file(chat_id)
     if chat_id not in USER_MODES:
         USER_MODES[chat_id] = "auto"
@@ -470,7 +503,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     header = "📷 **បកប្រែពីរូបភាព (Screenshot Translation):**\n\n"
     await send_long_message(update, header + str(reply))
 
-# ----- Handle normal text -----
+
+# ----- Normal text handler -----
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
@@ -530,6 +565,7 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "• `/mode`  – ប្ដូរ mode\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
 
 # ================= 6. MAIN EXECUTION =================
 
