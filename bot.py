@@ -33,15 +33,14 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 GROQ_MODEL_CHAT = "llama-3.3-70b-versatile"
-# Vision model name — ប្រសិនបើ Groq ផ្លាស់ប្តូរ naming អាចកែនៅទីនេះ
-GROQ_MODEL_VISION = "llama-3.2-90b-vision-preview"
+GROQ_MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 USERS_FILE = "users.json"
 
 # USER_MODES: {chat_id: 'auto' | 'learner' | 'foreigner'}
-USER_MODES = {}
+USER_MODES: dict[int, str] = {}
 # USER_STATS: {chat_id: message_count}
-USER_STATS = {}
+USER_STATS: dict[int, int] = {}
 
 # ----- Logging to console + file -----
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -117,7 +116,7 @@ OUTPUT FORMAT:
 # =============== 3. HELPER FUNCTIONS ==============
 
 
-def load_users():
+def load_users() -> set[int]:
     if not os.path.exists(USERS_FILE):
         return set()
     with open(USERS_FILE, "r", encoding="utf-8") as f:
@@ -128,7 +127,7 @@ def load_users():
             return set()
 
 
-def save_user_to_file(chat_id):
+def save_user_to_file(chat_id: int) -> None:
     users = load_users()
     if chat_id not in users:
         users.add(chat_id)
@@ -139,7 +138,7 @@ def save_user_to_file(chat_id):
             logger.error(f"Failed to save users file: {e}")
 
 
-def get_main_keyboard():
+def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳"), KeyboardButton("🇺🇸 -> 🇰🇭 (Foreigner)")],
         [KeyboardButton("📩 Feedback"), KeyboardButton("❓ Help/ជំនួយ")],
@@ -148,7 +147,7 @@ def get_main_keyboard():
 
 
 def detect_mode_from_text(text: str) -> str:
-    """Simple heuristic: Khmer only -> learner, Latin/Chinese -> foreigner, mixed -> learner"""
+    """Simple heuristic: Khmer only -> learner, Latin/Chinese only -> foreigner, mixed -> learner."""
     has_khmer = any("\u1780" <= ch <= "\u17FF" for ch in text)
     has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in text)
     has_latin = any("a" <= ch.lower() <= "z" for ch in text if ch.isalpha())
@@ -181,12 +180,12 @@ async def get_ai_response(chat_id: int, user_text: str) -> str:
     try:
         response = client.chat.completions.create(
             model=GROQ_MODEL_CHAT,
-            temperature=0.3,
-            max_tokens=1500,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text},
             ],
+            temperature=0.3,
+            max_tokens=1500,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -432,6 +431,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id = update.effective_chat.id
     USER_STATS[chat_id] = USER_STATS.get(chat_id, 0) + 1
 
+    # ---- Download image ----
     photo = update.message.photo[-1]  # largest size
     try:
         file = await photo.get_file()
@@ -445,26 +445,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    b64_image = base64.b64encode(image_bytes).decode("ascii")
+    b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    await update.message.reply_text("🖼️ កំពុងអានអក្សរ​ពីរូបភាព...")
+    await update.message.reply_text("🖼️ កំពុងអានអក្សរពីរូបភាព...")
 
+    # ---- Groq Vision OCR ----
     try:
         vision_resp = client.chat.completions.create(
             model=GROQ_MODEL_VISION,
-            max_tokens=600,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an OCR engine. Extract all readable text from the image. "
-                               "Return plain text only.",
-                },
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text",
-                            "text": "Extract ALL text from this image.",
+                            "text": "Extract ALL readable text from this image. "
+                                    "Return plain text only, no explanation.",
                         },
                         {
                             "type": "image_url",
@@ -473,14 +469,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                             },
                         },
                     ],
-                },
+                }
             ],
         )
-        ocr_text = vision_resp.choices[0].message.content
-        if ocr_text is None:
-            ocr_text = ""
-        else:
-            ocr_text = str(ocr_text).strip()
+
+        ocr_text = vision_resp.choices[0].message.content or ""
+        ocr_text = str(ocr_text).strip()
     except Exception as e:
         logger.error(f"Groq Vision OCR error: {e}")
         await update.message.reply_text(
