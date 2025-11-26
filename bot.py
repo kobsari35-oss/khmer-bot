@@ -2,10 +2,11 @@ import os
 import logging
 import json
 import asyncio
+import base64
 from datetime import time
+from io import BytesIO
 from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
-from io import BytesIO
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ChatAction, ParseMode
@@ -18,13 +19,13 @@ from telegram.ext import (
 )
 from groq import Groq
 
-# ព្យាយាម Import keep_alive
+# ព្យាយាម Import keep_alive (optional for uptime ping)
 try:
     from keep_alive import keep_alive
 except ImportError:
     keep_alive = None
 
-# ================= 1. CONFIGURATION =================
+# =============== 1. CONFIGURATION =================
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -32,6 +33,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 GROQ_MODEL_CHAT = "llama-3.3-70b-versatile"
+# Vision model name — ប្រសិនបើ Groq ផ្លាស់ប្តូរ naming អាចកែនៅទីនេះ
+GROQ_MODEL_VISION = "llama-3.2-90b-vision-preview"
+
 USERS_FILE = "users.json"
 
 # USER_MODES: {chat_id: 'auto' | 'learner' | 'foreigner'}
@@ -45,12 +49,10 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
-# console handler
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 root_logger.addHandler(console_handler)
 
-# file handler (rotate ~1MB, keep 3 backups)
 file_handler = RotatingFileHandler(
     "bot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
 )
@@ -65,22 +67,7 @@ else:
     client = None
     logger.warning("⚠️ GROQ_API_KEY is missing! AI responses will not work.")
 
-# ----- Optional OCR libraries (Pillow + pytesseract) -----
-try:
-    from PIL import Image
-    import pytesseract
-
-    OCR_AVAILABLE = True
-    logger.info("OCR libraries loaded successfully (Pillow + pytesseract).")
-except Exception as e:
-    Image = None
-    pytesseract = None
-    OCR_AVAILABLE = False
-    logger.warning(
-        "OCR libraries not available. Screenshot translation disabled. Error: %s", e
-    )
-
-# ================= 2. PROMPTS =================
+# =============== 2. PROMPTS =======================
 
 PROMPT_KHMER_LEARNER = """
 You are an expert Multi-Language Tutor (English & Chinese) for Khmer speakers.
@@ -127,7 +114,7 @@ OUTPUT FORMAT:
 💡 **Tip:** [Cultural context]
 """
 
-# ================= 3. HELPER FUNCTIONS =================
+# =============== 3. HELPER FUNCTIONS ==============
 
 
 def load_users():
@@ -161,12 +148,7 @@ def get_main_keyboard():
 
 
 def detect_mode_from_text(text: str) -> str:
-    """
-    Heuristic:
-    - Only Khmer characters -> learner
-    - Latin/Chinese but no Khmer -> foreigner
-    - Mixed -> default learner
-    """
+    """Simple heuristic: Khmer only -> learner, Latin/Chinese -> foreigner, mixed -> learner"""
     has_khmer = any("\u1780" <= ch <= "\u17FF" for ch in text)
     has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in text)
     has_latin = any("a" <= ch.lower() <= "z" for ch in text if ch.isalpha())
@@ -198,13 +180,13 @@ async def get_ai_response(chat_id: int, user_text: str) -> str:
 
     try:
         response = client.chat.completions.create(
+            model=GROQ_MODEL_CHAT,
+            temperature=0.3,
+            max_tokens=1500,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text},
             ],
-            model=GROQ_MODEL_CHAT,
-            temperature=0.3,
-            max_tokens=1500,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -213,10 +195,7 @@ async def get_ai_response(chat_id: int, user_text: str) -> str:
 
 
 async def send_long_message(update: Update, text: str) -> None:
-    """
-    Telegram មានលីមីតប្រវែងសារ ~4096 characters
-    ដូច្នេះបំបែកជាបន្ទាត់តូចៗ មុនផ្ញើ
-    """
+    """Split long messages to respect Telegram 4096-char limit."""
     if not text:
         return
 
@@ -230,7 +209,7 @@ async def send_long_message(update: Update, text: str) -> None:
         await update.message.reply_text(chunk)
 
 
-# ================= 4. SCHEDULING ALERT =================
+# =============== 4. SCHEDULING ALERT ==============
 
 
 async def send_scheduled_alert(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -245,7 +224,7 @@ async def send_scheduled_alert(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning(f"Failed to send scheduled alert to {uid}: {e}")
 
 
-# ================= 5. HANDLERS =================
+# =============== 5. COMMAND HANDLERS ==============
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -253,7 +232,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     save_user_to_file(chat_id)
 
-    # default first-time mode = auto (detect from message later)
     if chat_id not in USER_MODES:
         USER_MODES[chat_id] = "auto"
 
@@ -262,11 +240,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "👨‍🏫 **ខ្ញុំអាចជួយអ្នករៀនភាសា អង់គ្លេស និង ចិន។**\n\n"
         "📚 **របៀបប្រើប្រាស់:**\n"
         "1️⃣ **🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳 (សិស្សរៀនភាសា)**\n"
-        "• វាយជាខ្មែរ ឬអង់គ្លេស ខ្ញុំនឹងបកប្រែជា **អង់គ្លេស និង ចិន (មាន Pinyin)** ព្រមទាំងប្រាប់របៀបអាន។\n\n"
+        "   • វាយជាខ្មែរ ឬអង់គ្លេស ខ្ញុំនឹងបកប្រែជា អង់គ្លេស និង ចិន (មាន Pinyin) + អានជាខ្មែរ។\n\n"
         "2️⃣ **🇺🇸 -> 🇰🇭 (Foreigner)**\n"
-        "• For foreigners learning Khmer.\n\n"
-        "📌 Mode ដំបូងនឹងកំណត់ស្វ័យប្រវត្តិតាមភាសាសារ​អ្នក។\n"
-        "📷 អាចផ្ញើ screenshot/រូបភាព មានអក្សរ ដើម្បីបកប្រែបានផងដែរ (បើ server មាន OCR).\n"
+        "   • For foreigners learning Khmer.\n\n"
+        "3️⃣ **Screenshot OCR**\n"
+        "   • ផ្ញើ screenshot/រូបភាព មានអក្សរ → ខ្ញុំនឹងអានអក្សរ ហើយបកប្រែដូចសារ text។\n\n"
+        "📌 Mode ដំបូងកំណត់ស្វ័យប្រវត្តិតាមភាសាសារ។\n"
         "👇 **សូមចុចប៊ូតុងខាងក្រោម ដើម្បីចាប់ផ្តើម!**"
     )
 
@@ -284,8 +263,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "   • Bot នឹងបកប្រែ តាម mode (learner / foreigner).\n\n"
         "2️⃣ Screenshot / Image:\n"
         "   • ផ្ញើរូបភាព/screenshot ដែលមានអក្សរ\n"
-        "   • Bot នឹងអានអក្សរ (OCR) ហើយបកប្រែដូចសារ text "
-        "(បើ server មាន OCR support).\n\n"
+        "   • Bot នឹងអានអក្សរ (Vision OCR) ហើយបកប្រែដូចសារ text។\n\n"
         "3️⃣ ផ្ញើមតិយោបល់:\n"
         "   • `/feedback សារ​របស់​អ្នក`\n\n"
         "4️⃣ ប្ដូរ Mode ដោយ command:\n"
@@ -302,7 +280,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "ℹ️ **About AI Language Tutor Bot**\n\n"
         "• ជួយសិស្សខ្មែរ រៀន អង់គ្លេស និង ចិន (មាន Pinyin និងសូរ​អានជាខ្មែរ).\n"
         "• ជួយ Foreigner បកប្រែ English/Chinese ទៅ Khmer (script + romanization + tips).\n"
-        "• Auto-detect mode + Screenshot OCR translate (បើ server មាន OCR).\n\n"
+        "• Auto-detect mode + Screenshot OCR via Groq Vision.\n\n"
         "Commands សំខាន់ៗ:\n"
         "• `/start`  – ចាប់ផ្តើម\n"
         "• `/help`   – របៀបប្រើ\n"
@@ -439,15 +417,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
-# ----- Photo handler (screenshot OCR) -----
+# =============== 6. PHOTO HANDLER (VISION OCR) =====
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not OCR_AVAILABLE:
-        await update.message.reply_text(
-            "⚠️ Screenshot translation មិនទាន់អាចប្រើបានទេ ព្រោះ server មិនទាន់ដំឡើង OCR library (Pillow/pytesseract/Tesseract).\n"
-            "សូមទាក់ទង admin ប្រសិនបើត្រូវការអោយបើកមុខងារនេះ។"
-        )
+    """Use Groq Vision model to OCR the image, then translate like normal text."""
+    if not client:
+        await update.message.reply_text("⚠️ Server Error: Missing API Key.")
         return
 
     if not update.message or not update.message.photo:
@@ -456,47 +432,75 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id = update.effective_chat.id
     USER_STATS[chat_id] = USER_STATS.get(chat_id, 0) + 1
 
-    photo = update.message.photo[-1]  # biggest size
+    photo = update.message.photo[-1]  # largest size
     try:
         file = await photo.get_file()
         bio = BytesIO()
         await file.download_to_memory(bio)
-        bio.seek(0)
-        image = Image.open(bio)
+        image_bytes = bio.getvalue()
     except Exception as e:
-        logger.error(f"Failed to download/open image: {e}")
+        logger.error(f"Failed to download image: {e}")
         await update.message.reply_text(
-            "⚠️ មិនអាចទាញយក ឬបើករូបភាពបានទេ។ សូមសាកល្បងម្ដងទៀត។"
+            "⚠️ មិនអាចទាញយករូបភាពបានទេ។ សូមសាកល្បងម្ដងទៀត។"
         )
         return
 
+    b64_image = base64.b64encode(image_bytes).decode("ascii")
+
+    await update.message.reply_text("🖼️ កំពុងអានអក្សរ​ពីរូបភាព...")
+
     try:
-        # Note: need language data installed on server if specifying lang
-        ocr_text = pytesseract.image_to_string(image)
-        logger.info(f"OCR text from image (first 100 chars): {ocr_text[:100]!r}")
+        vision_resp = client.chat.completions.create(
+            model=GROQ_MODEL_VISION,
+            max_tokens=600,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an OCR engine. Extract all readable text from the image. "
+                               "Return plain text only.",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract ALL text from this image.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{b64_image}"
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+        ocr_text = vision_resp.choices[0].message.content
+        if ocr_text is None:
+            ocr_text = ""
+        else:
+            ocr_text = str(ocr_text).strip()
     except Exception as e:
-        logger.error(f"OCR error: {e}")
+        logger.error(f"Groq Vision OCR error: {e}")
         await update.message.reply_text(
             "⚠️ OCR Error: មិនអាចអានអក្សរពីរូបភាពបានទេ។"
         )
         return
 
-    if not ocr_text or not ocr_text.strip():
+    if not ocr_text:
         await update.message.reply_text(
             "⚠️ មិនរកឃើញអក្សរពីក្នុងរូបភាពទេ។ សូមប្រើរូបភាពដែលអក្សរច្បាស់ជាងនេះ។"
         )
         return
 
-    chat_id = update.effective_chat.id
     save_user_to_file(chat_id)
     if chat_id not in USER_MODES:
         USER_MODES[chat_id] = "auto"
 
-    await context.bot.send_chat_action(
-        chat_id=chat_id, action=ChatAction.TYPING
-    )
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    reply = await get_ai_response(chat_id, ocr_text.strip())
+    reply = await get_ai_response(chat_id, ocr_text)
     if reply is None:
         reply = "⚠️ No response from AI."
 
@@ -504,7 +508,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await send_long_message(update, header + str(reply))
 
 
-# ----- Normal text handler -----
+# =============== 7. TEXT HANDLER ===================
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -567,7 +571,7 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
-# ================= 6. MAIN EXECUTION =================
+# =============== 8. MAIN ===========================
 
 if __name__ == "__main__":
     if keep_alive:
