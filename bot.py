@@ -1,36 +1,57 @@
-import os
-import logging
-import json
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+AI Language Tutor Telegram Bot
+Khmer ⇄ English ⇄ Chinese + OCR + Grammar Tools
+
+Author: Kobsari (refactored)
+"""
+
 import asyncio
 import base64
-from datetime import time
-from io import BytesIO
-from dotenv import load_dotenv
+import json
+import logging
+import os
+from datetime import time as dt_time
 from logging.handlers import RotatingFileHandler
+from typing import Dict, Set, Optional
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from dotenv import load_dotenv
+from groq import Groq
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
 )
-from groq import Groq
 
-# ព្យាយាម Import keep_alive (optional for uptime ping)
+# Optional uptime ping (Replit / Render, etc.)
 try:
     from keep_alive import keep_alive
-except ImportError:
+except ImportError:  # pragma: no cover
     keep_alive = None
 
-# =============== 1. CONFIGURATION =================
+# ==================================================
+# 1. CONFIGURATION & GLOBALS
+# ==================================================
+
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ADMIN_ID = os.getenv("ADMIN_ID")
+ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+
+try:
+    ADMIN_ID: Optional[int] = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else None
+except ValueError:
+    ADMIN_ID = None
 
 GROQ_MODEL_CHAT = "llama-3.3-70b-versatile"
 GROQ_MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -38,11 +59,14 @@ GROQ_MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 USERS_FILE = "users.json"
 
 # USER_MODES: {chat_id: 'auto' | 'learner' | 'foreigner'}
-USER_MODES: dict[int, str] = {}
+USER_MODES: Dict[int, str] = {}
 # USER_STATS: {chat_id: message_count}
-USER_STATS: dict[int, int] = {}
+USER_STATS: Dict[int, int] = {}
 
-# ----- Logging to console + file -----
+# ==================================================
+# 2. LOGGING
+# ==================================================
+
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 root_logger = logging.getLogger()
@@ -60,13 +84,16 @@ root_logger.addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
 
+# Groq client
 if GROQ_API_KEY:
     client = Groq(api_key=GROQ_API_KEY)
 else:
     client = None
     logger.warning("⚠️ GROQ_API_KEY is missing! AI responses will not work.")
 
-# =============== 2. PROMPTS =======================
+# ==================================================
+# 3. SYSTEM PROMPTS
+# ==================================================
 
 PROMPT_KHMER_LEARNER = """
 You are an expert Multi-Language Tutor (English & Chinese) for Khmer speakers.
@@ -76,7 +103,7 @@ YOUR TASK:
 2. Provide the ENGLISH translation/correction with Khmer Phonetics.
 3. Provide the CHINESE translation with PINYIN and Khmer Phonetics.
 4. Provide the KHMER meaning.
-5. **CRITICAL:** ALWAYS provide a Usage Example in ALL 3 languages, INCLUDING PINYIN for Chinese.
+5. ALWAYS provide a Usage Example in ALL 3 languages, INCLUDING PINYIN for Chinese.
 
 OUTPUT FORMAT:
 --------------------------------
@@ -99,9 +126,10 @@ OUTPUT FORMAT:
 
 PROMPT_FOREIGNER = """
 You are a Khmer Language & Cultural Guide for Foreigners.
-YOUR TASK:
-1. Translate English/Chinese input into **Standard Polite Khmer**.
-2. Provide **Romanized Phonetics**.
+
+TASK:
+1. Translate English/Chinese input into Standard Polite Khmer.
+2. Provide Romanized Phonetics.
 3. Provide a Cultural Tip.
 
 OUTPUT FORMAT:
@@ -112,8 +140,6 @@ OUTPUT FORMAT:
 --------------------------------
 💡 **Tip:** [Cultural context]
 """
-
-# --- Grammar prompts ---
 
 PROMPT_KM_GRAMMAR = """
 You are an expert Khmer language teacher.
@@ -163,8 +189,7 @@ PROMPT_CN_GRAMMAR = """
 You are an expert Mandarin Chinese teacher.
 
 Task:
-- Correct grammar, word choice, and word order for Mandarin Chinese.
-- Use Simplified Chinese.
+- Correct grammar, word choice, and word order for Mandarin Chinese (Simplified).
 - Provide Pinyin for the corrected sentence.
 - Explain the main corrections in Khmer (for Khmer students).
 
@@ -185,21 +210,31 @@ Output format:
 --------------------------------
 """
 
-# =============== 3. HELPER FUNCTIONS ==============
+# ==================================================
+# 4. HELPER FUNCTIONS
+# ==================================================
 
 
-def load_users() -> set[int]:
+def is_admin(chat_id: int) -> bool:
+    """Return True if the given chat_id matches ADMIN_ID."""
+    return ADMIN_ID is not None and chat_id == ADMIN_ID
+
+
+def load_users() -> Set[int]:
+    """Load registered user chat_ids from USERS_FILE."""
     if not os.path.exists(USERS_FILE):
         return set()
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        try:
-            return set(json.load(f))
-        except Exception as e:
-            logger.warning(f"Failed to load users file: {e}")
-            return set()
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return set(int(x) for x in data)
+    except Exception as e:
+        logger.warning(f"Failed to load users file: {e}")
+        return set()
 
 
 def save_user_to_file(chat_id: int) -> None:
+    """Persist a new chat_id into USERS_FILE."""
     users = load_users()
     if chat_id not in users:
         users.add(chat_id)
@@ -211,15 +246,31 @@ def save_user_to_file(chat_id: int) -> None:
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """Return the main reply keyboard."""
     keyboard = [
-        [KeyboardButton("🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳"), KeyboardButton("🇺🇸 -> 🇰🇭 (Foreigner)")],
-        [KeyboardButton("📩 Feedback"), KeyboardButton("❓ Help/ជំនួយ")],
+        [
+            KeyboardButton("🇰🇭 → 🇺🇸🇨🇳 (Learner)"),
+            KeyboardButton("🇺🇸/🇨🇳 → 🇰🇭 (Foreigner)"),
+        ],
+        [
+            KeyboardButton("✏️ Grammar Tools"),
+            KeyboardButton("🖼 Screenshot OCR"),
+        ],
+        [
+            KeyboardButton("📩 Feedback"),
+            KeyboardButton("ℹ️ Help / Guide"),
+        ],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 def detect_mode_from_text(text: str) -> str:
-    """Simple heuristic: Khmer only -> learner, Latin/Chinese only -> foreigner, mixed -> learner."""
+    """
+    Simple heuristic:
+      - Khmer only       -> learner
+      - Latin/Chinese only -> foreigner
+      - Mixed            -> learner
+    """
     has_khmer = any("\u1780" <= ch <= "\u17FF" for ch in text)
     has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in text)
     has_latin = any("a" <= ch.lower() <= "z" for ch in text if ch.isalpha())
@@ -231,12 +282,12 @@ def detect_mode_from_text(text: str) -> str:
     else:
         mode = "learner"
 
-    logger.info(f"Auto-detected mode from text='{text[:30]}...': {mode}")
+    logger.info("Auto-detected mode from text='%s...': %s", text[:30], mode)
     return mode
 
 
 async def chat_with_system_prompt(system_prompt: str, user_text: str) -> str:
-    """Generic helper to call Groq with a custom system prompt."""
+    """Call Groq chat model with a system prompt + user content."""
     if not client:
         return "⚠️ Server Error: Missing API Key."
 
@@ -248,31 +299,30 @@ async def chat_with_system_prompt(system_prompt: str, user_text: str) -> str:
                 {"role": "user", "content": user_text},
             ],
             temperature=0.3,
-            max_tokens=1500,
+            max_completion_tokens=1024,
         )
-        return resp.choices[0].message.content
+        return resp.choices[0].message.content or ""
     except Exception as e:
-        logger.error(f"chat_with_system_prompt error: {e}")
+        logger.error("chat_with_system_prompt error: %s", e, exc_info=True)
         return "⚠️ Error connecting to AI."
 
 
 async def get_ai_response(chat_id: int, user_text: str) -> str:
-    """Main translation / tutor logic using modes."""
+    """Main translation / tutor logic based on user mode."""
     mode = USER_MODES.get(chat_id, "auto")
 
-    # Auto-detect mode only if user hasn't chosen explicitly yet
     if mode == "auto":
         mode = detect_mode_from_text(user_text)
-        USER_MODES[chat_id] = mode  # remember for next time
+        USER_MODES[chat_id] = mode
 
     system_prompt = PROMPT_FOREIGNER if mode == "foreigner" else PROMPT_KHMER_LEARNER
-    logger.info(f"Using mode='{mode}' for chat_id={chat_id}")
+    logger.info("Using mode='%s' for chat_id=%s", mode, chat_id)
     return await chat_with_system_prompt(system_prompt, user_text)
 
 
 async def send_long_message(update: Update, text: str) -> None:
     """Split long messages to respect Telegram 4096-char limit."""
-    if not text:
+    if not update.message or not text:
         return
 
     max_len = 4000
@@ -285,38 +335,47 @@ async def send_long_message(update: Update, text: str) -> None:
         await update.message.reply_text(chunk)
 
 
-# =============== 4. SCHEDULING ALERT ==============
+# ==================================================
+# 5. SCHEDULING ALERT
+# ==================================================
 
 
 async def send_scheduled_alert(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends automatic messages to all users"""
-    message = context.job.data
+    """Send automatic messages to all registered users."""
+    message: str = context.job.data
     users = load_users()
-    logger.info(f"⏰ Auto-Sending Alert to {len(users)} users: {message!r}")
+    logger.info("⏰ Auto-Sending Alert to %d users: %r", len(users), message)
+
     for uid in users:
         try:
             await context.bot.send_message(chat_id=uid, text=message)
+            await asyncio.sleep(0.05)
         except Exception as e:
-            logger.warning(f"Failed to send scheduled alert to {uid}: {e}")
+            logger.warning("Failed to send scheduled alert to %s: %s", uid, e)
 
 
-# =============== 5. COMMAND HANDLERS ==============
+# ==================================================
+# 6. COMMAND HANDLERS
+# ==================================================
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start command: welcome message + main keyboard."""
+    if not update.message:
+        return
+
     user = update.effective_user
     chat_id = update.effective_chat.id
-    save_user_to_file(chat_id)
 
-    if chat_id not in USER_MODES:
-        USER_MODES[chat_id] = "auto"
+    save_user_to_file(chat_id)
+    USER_MODES.setdefault(chat_id, "auto")
 
     msg = (
         f"👋 **សួស្តី {user.first_name}! សូមស្វាគមន៍មកកាន់ AI Language Tutor!**\n\n"
         "👨‍🏫 **ខ្ញុំអាចជួយអ្នករៀនភាសា អង់គ្លេស និង ចិន។**\n\n"
         "📚 **មុខងារសំខាន់ៗ:**\n"
-        "• 🇰🇭 -> 🇺🇸🇨🇳  Khmer Learner Mode\n"
-        "• 🇺🇸/🇨🇳 -> 🇰🇭 Foreigner Mode\n"
+        "• 🇰🇭 → 🇺🇸🇨🇳  Khmer Learner Mode\n"
+        "• 🇺🇸/🇨🇳 → 🇰🇭 Foreigner Mode\n"
         "• 🖼 Screenshot OCR Translate\n"
         "• ✏️ Grammar Correction: `/kmgrammar`, `/enggrammar`, `/cngrammar`\n\n"
         "📌 Mode ដំបូងកំណត់ស្វ័យប្រវត្តិតាមភាសាសារ។\n"
@@ -324,130 +383,149 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     await update.message.reply_text(
-        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_keyboard()
+        msg,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=get_main_keyboard(),
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show help / usage guide."""
+    if not update.message:
+        return
+
     msg = (
-        "🆘 **ជំនួយ ប្រើ Bot**\n\n"
-        "1️⃣ Translation Modes\n"
-        "   • `/mode learner`   – 🇰🇭 -> 🇺🇸🇨🇳 (Khmer Learner)\n"
-        "   • `/mode foreigner` – 🇺🇸/🇨🇳 -> 🇰🇭 (Foreigner)\n"
-        "   • `/mode auto`      – Auto-detect\n\n"
-        "2️⃣ Screenshot / Image OCR\n"
-        "   • ផ្ញើរូបភាព/screenshot មានអក្សរ → Bot អានអក្សរ ហើយបកប្រែ\n\n"
-        "3️⃣ Grammar Correction\n"
-        "   • `/kmgrammar ប្រ្យោគខ្មែរ...`  – ពិនិត្យ & កែភាសាខ្មែរ\n"
-        "   • `/enggrammar English sentence...` – ពិនិត្យ & កែភាសាអង់គ្លេស\n"
-        "   • `/cngrammar 中文句子...` – ពិនិត្យ & កែភាសាចិន (មាន Pinyin + ពន្យល់ខ្មែរ)\n\n"
-        "4️⃣ ផ្ញើមតិយោបល់\n"
-        "   • `/feedback សារ​របស់​អ្នក`\n\n"
-        "👇 ប្រើ /menu ដើម្បីបង្ហាញប៊ូតុងម្ដងទៀត។"
+        "📖 **ជំនួយប្រើ AI Language Tutor Bot**\n\n"
+        "🌐 Translation Modes\n"
+        "• `🇰🇭 → 🇺🇸🇨🇳 (Learner)` – Khmer → English+Chinese\n"
+        "• `🇺🇸/🇨🇳 → 🇰🇭 (Foreigner)` – English/Chinese → Khmer\n"
+        "• `/mode learner`, `/mode foreigner`, `/mode auto`\n\n"
+        "✏️ Grammar Correction\n"
+        "• Khmer: `/kmgrammar ប្រយោគភាសាខ្មែរ...`\n"
+        "• English: `/enggrammar your English sentence...`\n"
+        "• Chinese: `/cngrammar 你的中文句子...`\n\n"
+        "🖼 Screenshot OCR\n"
+        "• ផ្ញើ screenshot/រូបមានអក្សរ → Bot អាន OCR + បកប្រែ\n\n"
+        "📩 Feedback\n"
+        "• `/feedback សារ​របស់​អ្នក`\n\n"
+        "Admin only: `/stats`, `/broadcast text`"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show short about info."""
+    if not update.message:
+        return
+
     msg = (
         "ℹ️ **About AI Language Tutor Bot**\n\n"
-        "• Khmer ⇄ English ⇄ Chinese translation & tutoring\n"
-        "• Screenshot OCR with Groq Vision\n"
-        "• Grammar correction:\n"
-        "   – Khmer (/kmgrammar)\n"
-        "   – English (/enggrammar)\n"
-        "   – Chinese (/cngrammar)\n"
-        "• Auto-detect learning mode\n\n"
-        "Commands សំខាន់ៗ:\n"
-        "• `/start`  – ចាប់ផ្តើម\n"
-        "• `/help`   – របៀបប្រើ\n"
-        "• `/menu`   – ប៊ូតុង\n"
-        "• `/mode`   – ប្ដូរ mode\n"
-        "• `/kmgrammar`, `/enggrammar`, `/cngrammar`\n"
-        "• `/feedback` – មតិយោបល់\n"
-        "• `/stats` – (Admin) ស្ថិតិ bot\n\n"
-        "🙏 អរគុណសម្រាប់ការប្រើប្រាស់!"
+        "• Khmer ⇄ English ⇄ Chinese tutor\n"
+        "• Screenshot OCR via Groq Vision\n"
+        "• Grammar correction (Khmer, English, Chinese)\n"
+        "• Auto-detect mode\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show main menu keyboard again."""
+    if not update.message:
+        return
+
     await update.message.reply_text(
-        "📋 ម៉ឺនុយត្រូវបានបង្ហាញឡើងវិញ។ សូមជ្រើសរើស Mode ឬ Function ខាងក្រោម 🎛️",
+        "📋 **Main Menu**\nសូមជ្រើសរើស Mode ឬ Tools ពីប៊ូតុងខាងក្រោម 👇",
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=get_main_keyboard(),
     )
 
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """User feedback → forward to admin."""
+    if not update.message:
+        return
+
     msg = " ".join(context.args)
     if not msg:
         await update.message.reply_text(
-            "សូមប្រើ៖ `/feedback សារ​របស់​អ្នក`", parse_mode=ParseMode.MARKDOWN
+            "សូមប្រើ៖ `/feedback សារ​របស់​អ្នក`",
+            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
-    if ADMIN_ID:
-        try:
-            await context.bot.send_message(
-                chat_id=int(ADMIN_ID), text=f"📩 Feedback: {msg}"
-            )
-            await update.message.reply_text("✅ Feedback sent.")
-        except Exception as e:
-            logger.error(f"Failed to send feedback to ADMIN: {e}")
-            await update.message.reply_text("⚠️ មិនអាចផ្ញើ Feedback ទៅ Admin បានទេ។")
-    else:
+    if ADMIN_ID is None:
         await update.message.reply_text("⚠️ ADMIN_ID មិនត្រូវបានកំណត់ទេ។")
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📩 Feedback from {update.effective_user.id}: {msg}",
+        )
+        await update.message.reply_text("✅ Feedback sent.")
+    except Exception as e:
+        logger.error("Failed to send feedback to ADMIN: %s", e)
+        await update.message.reply_text("⚠️ មិនអាចផ្ញើ Feedback ទៅ Admin បានទេ។")
 
 
 async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Get or set user mode (auto / learner / foreigner)."""
+    if not update.message:
+        return
+
     chat_id = update.effective_chat.id
+    current = USER_MODES.get(chat_id, "auto")
 
     if not context.args:
-        current = USER_MODES.get(chat_id, "auto")
         txt = (
             "🔧 **Current Mode:** `{}`\n\n"
-            "ប្រើ:\n"
-            "• `/mode learner`   – 🇰🇭 -> 🇺🇸🇨🇳 (Khmer Learner)\n"
-            "• `/mode foreigner` – 🇺🇸 -> 🇰🇭 (Foreigner)\n"
+            "• `/mode learner`   – Khmer Learner\n"
+            "• `/mode foreigner` – Foreigner\n"
             "• `/mode auto`      – Auto-detect\n"
         ).format(current)
         await update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
         return
 
     arg = context.args[0].lower()
+
     if arg in ["learner", "khmer", "student"]:
         USER_MODES[chat_id] = "learner"
         await update.message.reply_text(
-            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Khmer Learner**\nសរសេរខ្មែរ/អង់គ្លេស មកបាន!",
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Khmer Learner**",
             parse_mode=ParseMode.MARKDOWN,
         )
     elif arg in ["foreigner", "en", "eng", "english"]:
         USER_MODES[chat_id] = "foreigner"
         await update.message.reply_text(
-            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Foreigner (English/Chinese -> Khmer)**",
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Foreigner (EN/CN -> KM)**",
             parse_mode=ParseMode.MARKDOWN,
         )
     elif arg in ["auto", "detect"]:
         USER_MODES[chat_id] = "auto"
         await update.message.reply_text(
-            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Auto-detect**\nខ្ញុំនឹងកំណត់ learner/foreigner ស្វ័យប្រវត្តិតាមភាសាសារ!",
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Auto-detect**",
             parse_mode=ParseMode.MARKDOWN,
         )
     else:
         await update.message.reply_text(
-            "⚠️ Mode មិនស្គាល់។\nប្រើ: `/mode learner`, `/mode foreigner` ឬ `/mode auto`",
+            "⚠️ Mode មិនស្គាល់។ ប្រើ: learner / foreigner / auto",
             parse_mode=ParseMode.MARKDOWN,
         )
 
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ADMIN_ID or str(update.effective_chat.id) != str(ADMIN_ID):
+    """Admin-only broadcast to all registered users."""
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    if not is_admin(chat_id):
         return
 
     msg = " ".join(context.args)
     if not msg:
         await update.message.reply_text(
-            "សូមវាយសារ៖ `/broadcast សារ​ត្រូវ​ផ្ញើ`",
+            "ប្រើ៖ `/broadcast សារ​ត្រូវ​ផ្ញើ`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -455,6 +533,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     users = load_users()
     sent = 0
     failed = 0
+
     for uid in users:
         try:
             await context.bot.send_message(chat_id=uid, text=f"📢 {msg}")
@@ -462,7 +541,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await asyncio.sleep(0.1)
         except Exception as e:
             failed += 1
-            logger.warning(f"Failed to send broadcast to {uid}: {e}")
+            logger.warning("Failed to send broadcast to %s: %s", uid, e)
 
     await update.message.reply_text(
         f"✅ Broadcast sent to {sent} users. Failed: {failed}."
@@ -470,7 +549,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ADMIN_ID or str(update.effective_chat.id) != str(ADMIN_ID):
+    """Admin-only bot statistics."""
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    if not is_admin(chat_id):
         return
 
     users = load_users()
@@ -484,10 +568,10 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     msg = (
         "📊 **Bot Stats**\n\n"
-        f"• Registered users (file): `{total_users}`\n"
+        f"• Registered users: `{total_users}`\n"
         f"• Active users in memory: `{len(USER_MODES)}`\n"
         f"• Total messages this run: `{total_msgs}`\n\n"
-        "Modes in memory:\n"
+        "Modes:\n"
         f"• auto: `{mode_counts['auto']}`\n"
         f"• learner: `{mode_counts['learner']}`\n"
         f"• foreigner: `{mode_counts['foreigner']}`\n"
@@ -495,14 +579,20 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
-# =============== 6. GRAMMAR COMMANDS ===============
+# ==================================================
+# 7. GRAMMAR COMMANDS
+# ==================================================
+
 
 async def kmgrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Khmer grammar correction."""
+    if not update.message:
+        return
+
     text = " ".join(context.args)
     if not text:
         await update.message.reply_text(
-            "ប្រើ៖ `/kmgrammar ប្រ្យោគភាសាខ្មែរ​របស់​អ្នក`\n\n"
-            "ឧ. `/kmgrammar ថ្ងៃនេះខ្ញុំទៅរៀនសាលា៉`",
+            "ប្រើ៖ `/kmgrammar ប្រយោគភាសាខ្មែរ​របស់​អ្នក`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -513,11 +603,14 @@ async def kmgrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def enggrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """English grammar correction."""
+    if not update.message:
+        return
+
     text = " ".join(context.args)
     if not text:
         await update.message.reply_text(
-            "Use: `/enggrammar your English sentence`\n\n"
-            "e.g. `/enggrammar She go to market yesterday.`",
+            "Use: `/enggrammar your English sentence`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -528,11 +621,14 @@ async def enggrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cngrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Chinese grammar correction."""
+    if not update.message:
+        return
+
     text = " ".join(context.args)
     if not text:
         await update.message.reply_text(
-            "使用: `/cngrammar 你的中文句子`\n\n"
-            "例如: `/cngrammar 我昨天去市场买东西了`",
+            "使用: `/cngrammar 你的中文句子`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -542,13 +638,18 @@ async def cngrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await send_long_message(update, reply)
 
 
-# =============== 7. PHOTO HANDLER (VISION OCR) =====
+# ==================================================
+# 8. PHOTO HANDLER (VISION OCR)
+# ==================================================
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Use Groq Vision model to OCR the image, then translate like normal text."""
+    """
+    Use Groq Vision model to OCR the image, then translate like normal text.
+    """
     if not client:
-        await update.message.reply_text("⚠️ Server Error: Missing API Key.")
+        if update.message:
+            await update.message.reply_text("⚠️ Server Error: Missing API Key.")
         return
 
     if not update.message or not update.message.photo:
@@ -557,25 +658,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id = update.effective_chat.id
     USER_STATS[chat_id] = USER_STATS.get(chat_id, 0) + 1
 
-    # ---- Download image ----
-    photo = update.message.photo[-1]  # largest size
+    # Get largest version of photo
+    photo = update.message.photo[-1]
     try:
         file = await photo.get_file()
-        bio = BytesIO()
-        await file.download_to_memory(bio)
-        image_bytes = bio.getvalue()
+        ba = await file.download_as_bytearray()
+        image_bytes = bytes(ba)
     except Exception as e:
-        logger.error(f"Failed to download image: {e}")
+        logger.error("Failed to download image: %s", e, exc_info=True)
         await update.message.reply_text(
             "⚠️ មិនអាចទាញយករូបភាពបានទេ។ សូមសាកល្បងម្ដងទៀត។"
         )
         return
 
-    b64_image = base64.b64encode(image_bytes).decode("utf-8")
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    await update.message.reply_text("🖼️ កំពុងអានអក្សរពីរូបភាព...")
+    await update.message.reply_text("🖼 កំពុងអានអក្សរពីរូបភាព...")
 
-    # ---- Groq Vision OCR ----
+    # Groq Vision: text + image_url content format (OpenAI compatible)
     try:
         vision_resp = client.chat.completions.create(
             model=GROQ_MODEL_VISION,
@@ -585,24 +685,28 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     "content": [
                         {
                             "type": "text",
-                            "text": "Extract ALL readable text from this image. "
-                                    "Return plain text only, no explanation.",
+                            "text": (
+                                "Extract ALL readable text from this image. "
+                                "Return plain text only, no explanation."
+                            ),
                         },
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{b64_image}"
+                                "url": f"data:image/jpeg;base64,{base64_image}",
                             },
                         },
                     ],
                 }
             ],
+            temperature=0,
+            max_completion_tokens=1024,
         )
 
         ocr_text = vision_resp.choices[0].message.content or ""
         ocr_text = str(ocr_text).strip()
     except Exception as e:
-        logger.error(f"Groq Vision OCR error: {e}")
+        logger.error("Groq Vision OCR error: %s", e, exc_info=True)
         await update.message.reply_text(
             "⚠️ OCR Error: មិនអាចអានអក្សរពីរូបភាពបានទេ។"
         )
@@ -610,28 +714,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not ocr_text:
         await update.message.reply_text(
-            "⚠️ មិនរកឃើញអក្សរពីក្នុងរូបភាពទេ។ សូមប្រើរូបភាពដែលអក្សរច្បាស់ជាងនេះ។"
+            "⚠️ មិនរកឃើញអក្សរ​ក្នុងរូបភាពទេ។ សូមប្រើរូបដែលអក្សរច្បាស់ជាងនេះ។"
         )
         return
 
+    # Ensure user is registered + mode available
     save_user_to_file(chat_id)
-    if chat_id not in USER_MODES:
-        USER_MODES[chat_id] = "auto"
+    USER_MODES.setdefault(chat_id, "auto")
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     reply = await get_ai_response(chat_id, ocr_text)
-    if reply is None:
+    if not reply:
         reply = "⚠️ No response from AI."
 
     header = "📷 **បកប្រែពីរូបភាព (Screenshot Translation):**\n\n"
     await send_long_message(update, header + str(reply))
 
 
-# =============== 8. TEXT HANDLER ===================
+# ==================================================
+# 9. TEXT HANDLER
+# ==================================================
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Main text message handler (mode buttons + normal chat)."""
     if not update.message or not update.message.text:
         return
 
@@ -640,115 +747,153 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     USER_STATS[chat_id] = USER_STATS.get(chat_id, 0) + 1
     logger.info(
-        f"Message from {chat_id}: {text[:50]}... (count={USER_STATS[chat_id]})"
+        "Message from %s: %s... (count=%s)",
+        chat_id,
+        text[:50],
+        USER_STATS[chat_id],
     )
 
-    if chat_id not in USER_MODES:
-        USER_MODES[chat_id] = "auto"
+    USER_MODES.setdefault(chat_id, "auto")
 
-    if text == "🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳":
+    # --- Keyboard buttons ---
+    if text == "🇰🇭 → 🇺🇸🇨🇳 (Learner)":
         USER_MODES[chat_id] = "learner"
         await update.message.reply_text(
-            "✅ **Mode: Khmer Learner**\nសរសេរមកបាន! ខ្ញុំនឹងចេញទាំង អង់គ្លេស និង ចិន។",
+            "✅ Mode: Khmer Learner\n"
+            "សរសេរ ខ្មែរ/EN → ខ្ញុំនឹងបកប្រែ EN + CN (មាន Pinyin).",
             parse_mode=ParseMode.MARKDOWN,
         )
-    elif text == "🇺🇸 -> 🇰🇭 (Foreigner)":
+        return
+
+    if text == "🇺🇸/🇨🇳 → 🇰🇭 (Foreigner)":
         USER_MODES[chat_id] = "foreigner"
         await update.message.reply_text(
-            "✅ **Mode: Foreigner Standard**",
+            "✅ Mode: Foreigner\n"
+            "វាយ English ឬ Chinese → ខ្ញុំបកប្រែជាខ្មែរ។",
             parse_mode=ParseMode.MARKDOWN,
         )
-    elif text == "📩 Feedback":
+        return
+
+    if text == "✏️ Grammar Tools":
         await update.message.reply_text(
-            "Type: `/feedback [msg]`", parse_mode=ParseMode.MARKDOWN
+            "✏️ **Grammar Tools**\n\n"
+            "• Khmer: `/kmgrammar ប្រយោគភាសាខ្មែរ...`\n"
+            "• English: `/enggrammar your English sentence...`\n"
+            "• Chinese: `/cngrammar 你的中文句子...`",
+            parse_mode=ParseMode.MARKDOWN,
         )
-    elif text == "❓ Help/ជំនួយ":
+        return
+
+    if text == "🖼 Screenshot OCR":
+        await update.message.reply_text(
+            "🖼 **Screenshot OCR Guide**\n\n"
+            "1️⃣ ថត screenshot ឬរូបមានអក្សរ\n"
+            "2️⃣ ផ្ញើរូបនោះមក bot (photo)\n"
+            "3️⃣ Bot នឹងអានអក្សរ និងបកប្រែស្វ័យប្រវត្តិ",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if text == "📩 Feedback":
+        await update.message.reply_text(
+            "ប្រើ៖ `/feedback សារ​របស់​អ្នក`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if text == "ℹ️ Help / Guide":
         await help_command(update, context)
+        return
+
+    # --- Normal text → AI tutor ---
+    save_user_to_file(chat_id)
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+    reply = await get_ai_response(chat_id, text)
+    if not reply:
+        reply = "⚠️ No response from AI."
     else:
-        save_user_to_file(chat_id)
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
-        reply = await get_ai_response(chat_id, text)
+        reply = str(reply)
 
-        if reply is None:
-            reply = "⚠️ No response from AI."
-        else:
-            reply = str(reply)
-
-        await send_long_message(update, reply)
+    await send_long_message(update, reply)
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catch-all for unknown commands."""
+    if not update.message:
+        return
+
     cmd = update.message.text
     msg = (
-        f"⚠️ Command `{cmd}` មិនស្គាល់ទេ។\n\n"
-        "សូមប្រើ:\n"
-        "• `/help`  – មើលរបៀបប្រើ\n"
-        "• `/menu`  – បង្ហាញប៊ូតុង\n"
-        "• `/mode`  – ប្ដូរ mode\n"
-        "• `/kmgrammar`, `/enggrammar`, `/cngrammar` – Grammar correction\n"
+        f"⚠️ Command `{cmd}` មិនស្គាល់ទេ។\n"
+        "ប្រើ `/help` ដើម្បីមើល commands ទាំងអស់។"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
-# =============== 9. MAIN ===========================
+# ==================================================
+# 10. MAIN ENTRYPOINT
+# ==================================================
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entrypoint: build application, register handlers, start polling."""
     if keep_alive:
         keep_alive()
 
     if not TELEGRAM_TOKEN:
         logger.error("❌ Error: TELEGRAM_TOKEN missing.")
-    else:
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        return
 
-        # Commands
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("about", about_command))
-        app.add_handler(CommandHandler("menu", menu_command))
-        app.add_handler(CommandHandler("mode", mode_command))
-        app.add_handler(CommandHandler("feedback", feedback_command))
-        app.add_handler(CommandHandler("broadcast", broadcast))
-        app.add_handler(CommandHandler("stats", stats_command))
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-        # Grammar commands
-        app.add_handler(CommandHandler("kmgrammar", kmgrammar_command))
-        app.add_handler(CommandHandler("enggrammar", enggrammar_command))
-        app.add_handler(CommandHandler("cngrammar", cngrammar_command))
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("about", about_command))
+    app.add_handler(CommandHandler("menu", menu_command))
+    app.add_handler(CommandHandler("mode", mode_command))
+    app.add_handler(CommandHandler("feedback", feedback_command))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("stats", stats_command))
 
-        # Photos (screenshots)
-        app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # Grammar commands
+    app.add_handler(CommandHandler("kmgrammar", kmgrammar_command))
+    app.add_handler(CommandHandler("enggrammar", enggrammar_command))
+    app.add_handler(CommandHandler("cngrammar", cngrammar_command))
 
-        # Text messages (non-command)
-        app.add_handler(
-            MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
-        )
+    # Photos (screenshots)
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-        # Unknown commands (must be AFTER all CommandHandlers)
-        app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    # Text messages (non-command)
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-        # Job queue (scheduled messages)
-        jq = app.job_queue
-        jq.run_daily(
-            send_scheduled_alert,
-            time=time(1, 0),
-            data="☀️ អរុណសួស្តី! Good Morning!",
-            name="morning",
-        )
-        jq.run_daily(
-            send_scheduled_alert,
-            time=time(6, 0),
-            data="☕ ទិវាសួស្តី! Good Afternoon!",
-            name="afternoon",
-        )
-        jq.run_daily(
-            send_scheduled_alert,
-            time=time(13, 0),
-            data="🌙 រាត្រីសួស្តី! Good Evening!",
-            name="evening",
-        )
+    # Unknown commands
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
-        logger.info("✅ Bot is running with Scheduler...")
-        app.run_polling(drop_pending_updates=True)
+    # Scheduler (daily greetings)
+    jq = app.job_queue
+    jq.run_daily(
+        send_scheduled_alert,
+        time=dt_time(1, 0),
+        data="☀️ អរុណសួស្តី! Good Morning!",
+        name="morning",
+    )
+    jq.run_daily(
+        send_scheduled_alert,
+        time=dt_time(6, 0),
+        data="☕ ទិវាសួស្តី! Good Afternoon!",
+        name="afternoon",
+    )
+    jq.run_daily(
+        send_scheduled_alert,
+        time=dt_time(13, 0),
+        data="🌙 រាត្រីសួស្តី! Good Evening!",
+        name="evening",
+    )
+
+    logger.info("✅ Bot is running with Scheduler...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
