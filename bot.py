@@ -113,6 +113,78 @@ OUTPUT FORMAT:
 💡 **Tip:** [Cultural context]
 """
 
+# --- Grammar prompts ---
+
+PROMPT_KM_GRAMMAR = """
+You are an expert Khmer language teacher.
+
+Task:
+- Correct the grammar, spelling, spacing and word choice of the Khmer sentence.
+- Keep the meaning as close as possible.
+- Explain the main corrections in simple Khmer.
+
+Output format (Khmer language):
+--------------------------------
+✍️ ប្រយោគដើម:
+[Original Khmer sentence]
+
+✅ ប្រយោគកែត្រឹមត្រូវ:
+[Corrected Khmer sentence]
+
+📝 ពន្យល់កំហុស:
+- [Short explanation point 1]
+- [Short explanation point 2]
+--------------------------------
+"""
+
+PROMPT_EN_GRAMMAR = """
+You are an expert English writing tutor.
+
+Task:
+- Correct grammar, spelling, word order, and style.
+- Keep the original meaning.
+- Give a brief explanation of the mistakes in simple English.
+
+Output format:
+--------------------------------
+✍️ Original:
+[Original sentence]
+
+✅ Corrected:
+[Corrected sentence]
+
+📝 Notes:
+- [Short explanation point 1]
+- [Short explanation point 2]
+--------------------------------
+"""
+
+PROMPT_CN_GRAMMAR = """
+You are an expert Mandarin Chinese teacher.
+
+Task:
+- Correct grammar, word choice, and word order for Mandarin Chinese.
+- Use Simplified Chinese.
+- Provide Pinyin for the corrected sentence.
+- Explain the main corrections in Khmer (for Khmer students).
+
+Output format:
+--------------------------------
+✍️ 句子原文 (Original):
+[Original Chinese sentence]
+
+✅ 改正后的句子 (Corrected):
+[Corrected sentence in Chinese]
+
+🎼 Pinyin:
+[Pinyin for corrected sentence]
+
+📝 ពន្យល់កំហុស (Khmer explanation):
+- [Short explanation point 1]
+- [Short explanation point 2]
+--------------------------------
+"""
+
 # =============== 3. HELPER FUNCTIONS ==============
 
 
@@ -163,10 +235,29 @@ def detect_mode_from_text(text: str) -> str:
     return mode
 
 
-async def get_ai_response(chat_id: int, user_text: str) -> str:
+async def chat_with_system_prompt(system_prompt: str, user_text: str) -> str:
+    """Generic helper to call Groq with a custom system prompt."""
     if not client:
         return "⚠️ Server Error: Missing API Key."
 
+    try:
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL_CHAT,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=0.3,
+            max_tokens=1500,
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        logger.error(f"chat_with_system_prompt error: {e}")
+        return "⚠️ Error connecting to AI."
+
+
+async def get_ai_response(chat_id: int, user_text: str) -> str:
+    """Main translation / tutor logic using modes."""
     mode = USER_MODES.get(chat_id, "auto")
 
     # Auto-detect mode only if user hasn't chosen explicitly yet
@@ -176,21 +267,7 @@ async def get_ai_response(chat_id: int, user_text: str) -> str:
 
     system_prompt = PROMPT_FOREIGNER if mode == "foreigner" else PROMPT_KHMER_LEARNER
     logger.info(f"Using mode='{mode}' for chat_id={chat_id}")
-
-    try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL_CHAT,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0.3,
-            max_tokens=1500,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"AI Chat Error: {e}")
-        return "⚠️ Error connecting to AI."
+    return await chat_with_system_prompt(system_prompt, user_text)
 
 
 async def send_long_message(update: Update, text: str) -> None:
@@ -237,13 +314,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = (
         f"👋 **សួស្តី {user.first_name}! សូមស្វាគមន៍មកកាន់ AI Language Tutor!**\n\n"
         "👨‍🏫 **ខ្ញុំអាចជួយអ្នករៀនភាសា អង់គ្លេស និង ចិន។**\n\n"
-        "📚 **របៀបប្រើប្រាស់:**\n"
-        "1️⃣ **🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳 (សិស្សរៀនភាសា)**\n"
-        "   • វាយជាខ្មែរ ឬអង់គ្លេស ខ្ញុំនឹងបកប្រែជា អង់គ្លេស និង ចិន (មាន Pinyin) + អានជាខ្មែរ។\n\n"
-        "2️⃣ **🇺🇸 -> 🇰🇭 (Foreigner)**\n"
-        "   • For foreigners learning Khmer.\n\n"
-        "3️⃣ **Screenshot OCR**\n"
-        "   • ផ្ញើ screenshot/រូបភាព មានអក្សរ → ខ្ញុំនឹងអានអក្សរ ហើយបកប្រែដូចសារ text។\n\n"
+        "📚 **មុខងារសំខាន់ៗ:**\n"
+        "• 🇰🇭 -> 🇺🇸🇨🇳  Khmer Learner Mode\n"
+        "• 🇺🇸/🇨🇳 -> 🇰🇭 Foreigner Mode\n"
+        "• 🖼 Screenshot OCR Translate\n"
+        "• ✏️ Grammar Correction: `/kmgrammar`, `/enggrammar`, `/cngrammar`\n\n"
         "📌 Mode ដំបូងកំណត់ស្វ័យប្រវត្តិតាមភាសាសារ។\n"
         "👇 **សូមចុចប៊ូតុងខាងក្រោម ដើម្បីចាប់ផ្តើម!**"
     )
@@ -256,19 +331,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = (
         "🆘 **ជំនួយ ប្រើ Bot**\n\n"
-        "• Mode ដំបូង៖ Auto-detect តាមភាសាសារ។\n\n"
-        "1️⃣ Text Chat:\n"
-        "   • សរសេរ ខ្មែរ / English / Chinese មក\n"
-        "   • Bot នឹងបកប្រែ តាម mode (learner / foreigner).\n\n"
-        "2️⃣ Screenshot / Image:\n"
-        "   • ផ្ញើរូបភាព/screenshot ដែលមានអក្សរ\n"
-        "   • Bot នឹងអានអក្សរ (Vision OCR) ហើយបកប្រែដូចសារ text។\n\n"
-        "3️⃣ ផ្ញើមតិយោបល់:\n"
-        "   • `/feedback សារ​របស់​អ្នក`\n\n"
-        "4️⃣ ប្ដូរ Mode ដោយ command:\n"
-        "   • `/mode learner`  – Khmer Learner\n"
-        "   • `/mode foreigner` – Foreigner\n"
+        "1️⃣ Translation Modes\n"
+        "   • `/mode learner`   – 🇰🇭 -> 🇺🇸🇨🇳 (Khmer Learner)\n"
+        "   • `/mode foreigner` – 🇺🇸/🇨🇳 -> 🇰🇭 (Foreigner)\n"
         "   • `/mode auto`      – Auto-detect\n\n"
+        "2️⃣ Screenshot / Image OCR\n"
+        "   • ផ្ញើរូបភាព/screenshot មានអក្សរ → Bot អានអក្សរ ហើយបកប្រែ\n\n"
+        "3️⃣ Grammar Correction\n"
+        "   • `/kmgrammar ប្រ្យោគខ្មែរ...`  – ពិនិត្យ & កែភាសាខ្មែរ\n"
+        "   • `/enggrammar English sentence...` – ពិនិត្យ & កែភាសាអង់គ្លេស\n"
+        "   • `/cngrammar 中文句子...` – ពិនិត្យ & កែភាសាចិន (មាន Pinyin + ពន្យល់ខ្មែរ)\n\n"
+        "4️⃣ ផ្ញើមតិយោបល់\n"
+        "   • `/feedback សារ​របស់​អ្នក`\n\n"
         "👇 ប្រើ /menu ដើម្បីបង្ហាញប៊ូតុងម្ដងទៀត។"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
@@ -277,14 +351,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = (
         "ℹ️ **About AI Language Tutor Bot**\n\n"
-        "• ជួយសិស្សខ្មែរ រៀន អង់គ្លេស និង ចិន (មាន Pinyin និងសូរ​អានជាខ្មែរ).\n"
-        "• ជួយ Foreigner បកប្រែ English/Chinese ទៅ Khmer (script + romanization + tips).\n"
-        "• Auto-detect mode + Screenshot OCR via Groq Vision.\n\n"
+        "• Khmer ⇄ English ⇄ Chinese translation & tutoring\n"
+        "• Screenshot OCR with Groq Vision\n"
+        "• Grammar correction:\n"
+        "   – Khmer (/kmgrammar)\n"
+        "   – English (/enggrammar)\n"
+        "   – Chinese (/cngrammar)\n"
+        "• Auto-detect learning mode\n\n"
         "Commands សំខាន់ៗ:\n"
         "• `/start`  – ចាប់ផ្តើម\n"
         "• `/help`   – របៀបប្រើ\n"
         "• `/menu`   – ប៊ូតុង\n"
         "• `/mode`   – ប្ដូរ mode\n"
+        "• `/kmgrammar`, `/enggrammar`, `/cngrammar`\n"
         "• `/feedback` – មតិយោបល់\n"
         "• `/stats` – (Admin) ស្ថិតិ bot\n\n"
         "🙏 អរគុណសម្រាប់ការប្រើប្រាស់!"
@@ -328,7 +407,7 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         txt = (
             "🔧 **Current Mode:** `{}`\n\n"
             "ប្រើ:\n"
-            "• `/mode learner`   – 🇰🇭 ខ្មែរ -> 🇺🇸🇨🇳 (Khmer Learner)\n"
+            "• `/mode learner`   – 🇰🇭 -> 🇺🇸🇨🇳 (Khmer Learner)\n"
             "• `/mode foreigner` – 🇺🇸 -> 🇰🇭 (Foreigner)\n"
             "• `/mode auto`      – Auto-detect\n"
         ).format(current)
@@ -416,7 +495,54 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
-# =============== 6. PHOTO HANDLER (VISION OCR) =====
+# =============== 6. GRAMMAR COMMANDS ===============
+
+async def kmgrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "ប្រើ៖ `/kmgrammar ប្រ្យោគភាសាខ្មែរ​របស់​អ្នក`\n\n"
+            "ឧ. `/kmgrammar ថ្ងៃនេះខ្ញុំទៅរៀនសាលា៉`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("✏️ កំពុងពិនិត្យវេយ្យាករណ៍ភាសាខ្មែរ...")
+    reply = await chat_with_system_prompt(PROMPT_KM_GRAMMAR, text)
+    await send_long_message(update, reply)
+
+
+async def enggrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "Use: `/enggrammar your English sentence`\n\n"
+            "e.g. `/enggrammar She go to market yesterday.`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("✏️ Checking English grammar...")
+    reply = await chat_with_system_prompt(PROMPT_EN_GRAMMAR, text)
+    await send_long_message(update, reply)
+
+
+async def cngrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "使用: `/cngrammar 你的中文句子`\n\n"
+            "例如: `/cngrammar 我昨天去市场买东西了`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("✏️ 正在检查中文语法 / កំពុងពិនិត្យភាសាចិន...")
+    reply = await chat_with_system_prompt(PROMPT_CN_GRAMMAR, text)
+    await send_long_message(update, reply)
+
+
+# =============== 7. PHOTO HANDLER (VISION OCR) =====
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -502,7 +628,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await send_long_message(update, header + str(reply))
 
 
-# =============== 7. TEXT HANDLER ===================
+# =============== 8. TEXT HANDLER ===================
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -561,11 +687,12 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "• `/help`  – មើលរបៀបប្រើ\n"
         "• `/menu`  – បង្ហាញប៊ូតុង\n"
         "• `/mode`  – ប្ដូរ mode\n"
+        "• `/kmgrammar`, `/enggrammar`, `/cngrammar` – Grammar correction\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
-# =============== 8. MAIN ===========================
+# =============== 9. MAIN ===========================
 
 if __name__ == "__main__":
     if keep_alive:
@@ -585,6 +712,11 @@ if __name__ == "__main__":
         app.add_handler(CommandHandler("feedback", feedback_command))
         app.add_handler(CommandHandler("broadcast", broadcast))
         app.add_handler(CommandHandler("stats", stats_command))
+
+        # Grammar commands
+        app.add_handler(CommandHandler("kmgrammar", kmgrammar_command))
+        app.add_handler(CommandHandler("enggrammar", enggrammar_command))
+        app.add_handler(CommandHandler("cngrammar", cngrammar_command))
 
         # Photos (screenshots)
         app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
