@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 AI Language Tutor Telegram Bot
-Khmer ⇄ English ⇄ Chinese + OCR + Grammar Tools
+Khmer ⇄ English ⇄ Chinese + OCR + Grammar Tools + Extra Features
 
-Author: Kobsari (refactored)
+Author: Kobsari (refactored + extended)
 """
 
 import asyncio
@@ -210,6 +210,33 @@ Output format:
 --------------------------------
 """
 
+PROMPT_EXPLAIN = """
+You are a friendly multilingual language tutor for a Khmer-speaking student.
+
+Task:
+1. Detect the language of the input sentence (Khmer, English, or Chinese).
+2. Explain the full meaning in simple Khmer.
+3. Highlight important vocabulary with short Khmer explanations (as bullet points).
+4. Give 1–2 extra example sentences in the same language as the original, each with a Khmer translation.
+
+Output format (Khmer UI):
+--------------------------------
+✍️ ប្រយោគដើម:
+[Original sentence]
+
+🇰🇭 ពន្យល់ជាភាសាខ្មែរ:
+[Explanation in simple Khmer, 2–5 short sentences]
+
+📚 ពាក្យសំខាន់ៗ:
+- [word 1] – [Khmer meaning]
+- [word 2] – [Khmer meaning]
+
+📝 ឧទាហរណ៍បន្ថែម:
+[Example sentence 1] → [Khmer translation]
+[Example sentence 2] → [Khmer translation]
+--------------------------------
+"""
+
 # ==================================================
 # 4. HELPER FUNCTIONS
 # ==================================================
@@ -267,9 +294,9 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
 def detect_mode_from_text(text: str) -> str:
     """
     Simple heuristic:
-      - Khmer only       -> learner
+      - Khmer only         -> learner
       - Latin/Chinese only -> foreigner
-      - Mixed            -> learner
+      - Mixed              -> learner
     """
     has_khmer = any("\u1780" <= ch <= "\u17FF" for ch in text)
     has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in text)
@@ -355,7 +382,7 @@ async def send_scheduled_alert(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ==================================================
-# 6. COMMAND HANDLERS
+# 6. COMMAND HANDLERS (CORE)
 # ==================================================
 
 
@@ -377,7 +404,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• 🇰🇭 → 🇺🇸🇨🇳  Khmer Learner Mode\n"
         "• 🇺🇸/🇨🇳 → 🇰🇭 Foreigner Mode\n"
         "• 🖼 Screenshot OCR Translate\n"
-        "• ✏️ Grammar Correction: `/kmgrammar`, `/enggrammar`, `/cngrammar`\n\n"
+        "• ✏️ Grammar Correction: `/kmgrammar`, `/enggrammar`, `/cngrammar`\n"
+        "• 🔍 Explain sentence: `/explain ...`\n"
+        "• 👤 Profile: `/profile`\n"
+        "• ♻️ Reset: `/reset`\n\n"
         "📌 Mode ដំបូងកំណត់ស្វ័យប្រវត្តិតាមភាសាសារ។\n"
         "👇 **សូមចុចប៊ូតុងខាងក្រោម ដើម្បីចាប់ផ្តើម!**"
     )
@@ -404,6 +434,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Khmer: `/kmgrammar ប្រយោគភាសាខ្មែរ...`\n"
         "• English: `/enggrammar your English sentence...`\n"
         "• Chinese: `/cngrammar 你的中文句子...`\n\n"
+        "🔍 Sentence Explanation\n"
+        "• `/explain sentence` – ពន្យល់អត្ថន័យ + vocab + examples ជាភាសាខ្មែរ\n\n"
+        "👤 User Tools\n"
+        "• `/profile` – ព័ត៌មានអំពី account របស់អ្នកក្នុង bot\n"
+        "• `/reset` – កំណត់ Mode និង counter សារឡើងវិញ\n\n"
         "🖼 Screenshot OCR\n"
         "• ផ្ញើ screenshot/រូបមានអក្សរ → Bot អាន OCR + បកប្រែ\n\n"
         "📩 Feedback\n"
@@ -423,6 +458,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• Khmer ⇄ English ⇄ Chinese tutor\n"
         "• Screenshot OCR via Groq Vision\n"
         "• Grammar correction (Khmer, English, Chinese)\n"
+        "• Sentence explanation tool (`/explain`)\n"
         "• Auto-detect mode\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
@@ -513,6 +549,47 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
 
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show information about current user inside the bot."""
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    users = load_users()
+    registered = chat_id in users
+    mode = USER_MODES.get(chat_id, "auto")
+    msg_count = USER_STATS.get(chat_id, 0)
+
+    msg = (
+        "👤 **User Profile (in this bot)**\n\n"
+        f"• ID: `{chat_id}`\n"
+        f"• Registered: `{'Yes' if registered else 'No'}`\n"
+        f"• Current mode: `{mode}`\n"
+        f"• Messages this run: `{msg_count}`\n\n"
+        "📌 អ្នកអាចប្តូរ Mode ដោយប្រើ `/mode ...`\n"
+        "📌 ប្រើ `/reset` ប្រសិនបើចង់ចាប់ផ្តើមថ្មី។"
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reset user-specific data (mode + message count)."""
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    USER_MODES[chat_id] = "auto"
+    USER_STATS[chat_id] = 0
+
+    await update.message.reply_text(
+        "♻️ **Reset complete!**\n"
+        "• Mode ត្រូវបានកំណត់វិញទៅ `auto`\n"
+        "• Message counter ត្រូវបានកំណត់ជា `0`\n\n"
+        "អាចចាប់ផ្តើមជាមួយប្រយោគថ្មីបានហើយ 😄",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin-only broadcast to all registered users."""
     if not update.message:
@@ -580,7 +657,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # ==================================================
-# 7. GRAMMAR COMMANDS
+# 7. GRAMMAR & EXPLAIN COMMANDS
 # ==================================================
 
 
@@ -635,6 +712,25 @@ async def cngrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await update.message.reply_text("✏️ 正在检查中文语法 / កំពុងពិនិត្យភាសាចិន...")
     reply = await chat_with_system_prompt(PROMPT_CN_GRAMMAR, text)
+    await send_long_message(update, reply)
+
+
+async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Explain a sentence (Khmer/English/Chinese) in simple Khmer."""
+    if not update.message:
+        return
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "ប្រើ៖ `/explain ប្រយោគ​របស់​អ្នក` (Kh/EN/CN)\n"
+            "ឧ. `/explain I will go to school tomorrow.`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("🔍 កំពុងពន្យល់ប្រយោគរបស់អ្នក...")
+    reply = await chat_with_system_prompt(PROMPT_EXPLAIN, text)
     await send_long_message(update, reply)
 
 
@@ -855,11 +951,14 @@ def main() -> None:
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("profile", profile_command))
+    app.add_handler(CommandHandler("reset", reset_command))
 
-    # Grammar commands
+    # Grammar & explain commands
     app.add_handler(CommandHandler("kmgrammar", kmgrammar_command))
     app.add_handler(CommandHandler("enggrammar", enggrammar_command))
     app.add_handler(CommandHandler("cngrammar", cngrammar_command))
+    app.add_handler(CommandHandler("explain", explain_command))
 
     # Photos (screenshots)
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
