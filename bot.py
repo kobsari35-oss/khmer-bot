@@ -58,7 +58,7 @@ GROQ_MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 USERS_FILE = "users.json"
 
-# USER_MODES: {chat_id: 'auto' | 'learner' | 'foreigner'}
+# USER_MODES: {chat_id: 'auto' | 'learner' | 'foreigner' | 'korean' | 'japanese' | 'filipino'}
 USER_MODES: Dict[int, str] = {}
 # USER_STATS: {chat_id: message_count}
 USER_STATS: Dict[int, int] = {}
@@ -100,19 +100,17 @@ You are an expert Multi-Language Tutor (English & Chinese) for Khmer speakers.
 
 YOUR TASK:
 1. Analyze the user's input.
-2. Provide the ENGLISH translation/correction with Khmer Phonetics.
-3. Provide the CHINESE translation with PINYIN and Khmer Phonetics.
+2. Provide the ENGLISH translation/correction.
+3. Provide the CHINESE translation with PINYIN.
 4. Provide the KHMER meaning.
 5. ALWAYS provide a Usage Example in ALL 3 languages, INCLUDING PINYIN for Chinese.
 
 OUTPUT FORMAT:
 --------------------------------
 🇺🇸 **English:** [English Sentence]
-🗣️ **អានថា:** [Sound of English in Khmer Script]
 --------------------------------
 🇨🇳 **Chinese:** [Chinese Characters]
 🎼 **Pinyin:** [Pinyin]
-🗣️ **អានថា:** [Sound of Chinese in Khmer Script]
 --------------------------------
 🇰🇭 **ប្រែថា:** [Khmer Meaning]
 --------------------------------
@@ -139,6 +137,70 @@ OUTPUT FORMAT:
 📖 **Meaning:** [Literal meaning]
 --------------------------------
 💡 **Tip:** [Cultural context]
+"""
+
+PROMPT_KOREAN_LEARNER = """
+You are a Korean language tutor for Khmer speakers.
+
+TASK:
+1. Translate or correct the sentence in Korean.
+2. Provide Korean in Hangul and Romanization.
+3. Explain the meaning in Khmer.
+4. Give 1–2 example sentences.
+
+OUTPUT FORMAT:
+--------------------------------
+🇰🇷 **Korean:** [Hangul sentence]
+🗣️ **Romanization:** [Romanized Korean]
+🇰🇭 **ប្រែថា:** [Khmer meaning]
+--------------------------------
+📝 **ឧទាហរណ៍ (Example):**
+🇰🇷 [Example Korean sentence]
+🗣️ [Romanization]
+🇰🇭 [Khmer example sentence]
+--------------------------------
+"""
+
+PROMPT_JAPANESE_LEARNER = """
+You are a Japanese language tutor for Khmer speakers.
+
+TASK:
+1. Translate or correct the sentence in Japanese.
+2. Provide Romaji (Latin script).
+3. Explain the meaning in Khmer.
+4. Give 1–2 example sentences.
+
+OUTPUT FORMAT:
+--------------------------------
+🇯🇵 **Japanese:** [Japanese sentence]
+🗣️ **Romaji:** [Romaji sentence]
+🇰🇭 **ប្រែថា:** [Khmer meaning]
+--------------------------------
+📝 **ឧទាហរណ៍ (Example):**
+🇯🇵 [Example Japanese sentence]
+🗣️ [Romaji]
+🇰🇭 [Khmer example sentence]
+--------------------------------
+"""
+
+PROMPT_FILIPINO_LEARNER = """
+You are a Filipino (Tagalog) language tutor for Khmer speakers.
+
+TASK:
+1. Translate or correct the sentence in Filipino.
+2. Provide a clear, natural Filipino sentence.
+3. Explain the meaning in Khmer.
+4. Give 1–2 example sentences.
+
+OUTPUT FORMAT:
+--------------------------------
+🇵🇭 **Filipino:** [Filipino sentence]
+🇰🇭 **ប្រែថា:** [Khmer meaning]
+--------------------------------
+📝 **ឧទាហរណ៍ (Example):**
+🇵🇭 [Example Filipino sentence]
+🇰🇭 [Khmer example sentence]
+--------------------------------
 """
 
 PROMPT_KM_GRAMMAR = """
@@ -280,6 +342,13 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             KeyboardButton("🇺🇸/🇨🇳 → 🇰🇭 (Foreigner)"),
         ],
         [
+            KeyboardButton("🇰🇭 → 🇰🇷 (Korean)"),
+            KeyboardButton("🇰🇭 → 🇯🇵 (Japanese)"),
+        ],
+        [
+            KeyboardButton("🇰🇭 → 🇵🇭 (Filipino)"),
+        ],
+        [
             KeyboardButton("✏️ Grammar Tools"),
             KeyboardButton("🖼 Screenshot OCR"),
         ],
@@ -342,7 +411,18 @@ async def get_ai_response(chat_id: int, user_text: str) -> str:
         mode = detect_mode_from_text(user_text)
         USER_MODES[chat_id] = mode
 
-    system_prompt = PROMPT_FOREIGNER if mode == "foreigner" else PROMPT_KHMER_LEARNER
+    if mode == "foreigner":
+        system_prompt = PROMPT_FOREIGNER
+    elif mode == "korean":
+        system_prompt = PROMPT_KOREAN_LEARNER
+    elif mode == "japanese":
+        system_prompt = PROMPT_JAPANESE_LEARNER
+    elif mode == "filipino":
+        system_prompt = PROMPT_FILIPINO_LEARNER
+    else:
+        # default Khmer learner (EN + CN)
+        system_prompt = PROMPT_KHMER_LEARNER
+
     logger.info("Using mode='%s' for chat_id=%s", mode, chat_id)
     return await chat_with_system_prompt(system_prompt, user_text)
 
@@ -429,7 +509,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🌐 Translation Modes\n"
         "• `🇰🇭 → 🇺🇸🇨🇳 (Learner)` – Khmer → English+Chinese\n"
         "• `🇺🇸/🇨🇳 → 🇰🇭 (Foreigner)` – English/Chinese → Khmer\n"
-        "• `/mode learner`, `/mode foreigner`, `/mode auto`\n\n"
+        "• `🇰🇭 → 🇰🇷 (Korean)` – Khmer → Korean\n"
+        "• `🇰🇭 → 🇯🇵 (Japanese)` – Khmer → Japanese\n"
+        "• `🇰🇭 → 🇵🇭 (Filipino)` – Khmer → Filipino\n"
+        "• `/mode learner`, `/mode foreigner`, `/mode korean`, `/mode japanese`, `/mode filipino`, `/mode auto`\n\n"
         "✏️ Grammar Correction\n"
         "• Khmer: `/kmgrammar ប្រយោគភាសាខ្មែរ...`\n"
         "• English: `/enggrammar your English sentence...`\n"
@@ -456,6 +539,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     msg = (
         "ℹ️ **About AI Language Tutor Bot**\n\n"
         "• Khmer ⇄ English ⇄ Chinese tutor\n"
+        "• Extra modes: Korean, Japanese, Filipino\n"
         "• Screenshot OCR via Groq Vision\n"
         "• Grammar correction (Khmer, English, Chinese)\n"
         "• Sentence explanation tool (`/explain`)\n"
@@ -505,7 +589,7 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Get or set user mode (auto / learner / foreigner)."""
+    """Get or set user mode (auto / learner / foreigner / korean / japanese / filipino)."""
     if not update.message:
         return
 
@@ -515,9 +599,12 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not context.args:
         txt = (
             "🔧 **Current Mode:** `{}`\n\n"
-            "• `/mode learner`   – Khmer Learner\n"
-            "• `/mode foreigner` – Foreigner\n"
-            "• `/mode auto`      – Auto-detect\n"
+            "• `/mode learner`    – Khmer Learner (KM → EN + CN)\n"
+            "• `/mode foreigner`  – Foreigner (EN/CN → KM)\n"
+            "• `/mode korean`     – Korean Learner (KM → KO)\n"
+            "• `/mode japanese`   – Japanese Learner (KM → JA)\n"
+            "• `/mode filipino`   – Filipino Learner (KM → PH)\n"
+            "• `/mode auto`       – Auto-detect\n"
         ).format(current)
         await update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
         return
@@ -527,13 +614,31 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if arg in ["learner", "khmer", "student"]:
         USER_MODES[chat_id] = "learner"
         await update.message.reply_text(
-            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Khmer Learner**",
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Khmer Learner (KM → EN + CN)**",
             parse_mode=ParseMode.MARKDOWN,
         )
     elif arg in ["foreigner", "en", "eng", "english"]:
         USER_MODES[chat_id] = "foreigner"
         await update.message.reply_text(
-            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Foreigner (EN/CN -> KM)**",
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Foreigner (EN/CN → KM)**",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    elif arg in ["korean", "kr"]:
+        USER_MODES[chat_id] = "korean"
+        await update.message.reply_text(
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Korean Learner (KM → KO)**",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    elif arg in ["japanese", "jp"]:
+        USER_MODES[chat_id] = "japanese"
+        await update.message.reply_text(
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Japanese Learner (KM → JA)**",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    elif arg in ["filipino", "tagalog", "ph"]:
+        USER_MODES[chat_id] = "filipino"
+        await update.message.reply_text(
+            "✅ Mode ផ្លាស់ប្ដូរ​ទៅ **Filipino Learner (KM → PH)**",
             parse_mode=ParseMode.MARKDOWN,
         )
     elif arg in ["auto", "detect"]:
@@ -544,7 +649,7 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
     else:
         await update.message.reply_text(
-            "⚠️ Mode មិនស្គាល់។ ប្រើ: learner / foreigner / auto",
+            "⚠️ Mode មិនស្គាល់។ ប្រើ: learner / foreigner / korean / japanese / filipino / auto",
             parse_mode=ParseMode.MARKDOWN,
         )
 
@@ -638,7 +743,14 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     total_users = len(users)
     total_msgs = sum(USER_STATS.values()) if USER_STATS else 0
 
-    mode_counts = {"auto": 0, "learner": 0, "foreigner": 0}
+    mode_counts = {
+        "auto": 0,
+        "learner": 0,
+        "foreigner": 0,
+        "korean": 0,
+        "japanese": 0,
+        "filipino": 0,
+    }
     for m in USER_MODES.values():
         if m in mode_counts:
             mode_counts[m] += 1
@@ -652,6 +764,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• auto: `{mode_counts['auto']}`\n"
         f"• learner: `{mode_counts['learner']}`\n"
         f"• foreigner: `{mode_counts['foreigner']}`\n"
+        f"• korean: `{mode_counts['korean']}`\n"
+        f"• japanese: `{mode_counts['japanese']}`\n"
+        f"• filipino: `{mode_counts['filipino']}`\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -870,6 +985,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    if text == "🇰🇭 → 🇰🇷 (Korean)":
+        USER_MODES[chat_id] = "korean"
+        await update.message.reply_text(
+            "✅ Mode: Korean Learner\n"
+            "វាយប្រយោគខ្មែរ → ខ្ញុំនឹងបកប្រែជាកូរ៉េ (Hangul + Romanization + Khmer meaning).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if text == "🇰🇭 → 🇯🇵 (Japanese)":
+        USER_MODES[chat_id] = "japanese"
+        await update.message.reply_text(
+            "✅ Mode: Japanese Learner\n"
+            "វាយប្រយោគខ្មែរ → ខ្ញុំនឹងបកប្រែជាជប៉ុន (Japanese + Romaji + Khmer meaning).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if text == "🇰🇭 → 🇵🇭 (Filipino)":
+        USER_MODES[chat_id] = "filipino"
+        await update.message.reply_text(
+            "✅ Mode: Filipino Learner\n"
+            "វាយប្រយោគខ្មែរ → ខ្ញុំនឹងបកប្រែជាភាសាហ្វីលីពីន (Filipino + Khmer meaning).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
     if text == "✏️ Grammar Tools":
         await update.message.reply_text(
             "✏️ **Grammar Tools**\n\n"
@@ -930,6 +1072,7 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ==================================================
 # 10. MAIN ENTRYPOINT
 # ==================================================
+
 
 def main() -> None:
     """Entrypoint: build application, register handlers, start polling."""
