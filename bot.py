@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 AI Language Tutor Telegram Bot
-Khmer ⇄ English ⇄ Chinese + OCR + Grammar Tools + Extra Features
+Khmer ⇄ English ⇄ Chinese + Korean + Japanese + Filipino
++ OCR + Grammar Tools + Extra Features
 
 Author: Kobsari (refactored + extended)
 """
@@ -481,8 +482,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"👋 **សួស្តី {user.first_name}! សូមស្វាគមន៍មកកាន់ AI Language Tutor!**\n\n"
         "👨‍🏫 **ខ្ញុំអាចជួយអ្នករៀនភាសា អង់គ្លេស និង ចិន។**\n\n"
         "📚 **មុខងារសំខាន់ៗ:**\n"
-        "• 🇰🇭 → 🇺🇸🇨🇳  Khmer Learner Mode\n"
-        "• 🇺🇸/🇨🇳 → 🇰🇭 Foreigner Mode\n"
+        "• Khmer → English + Chinese\n"
+        "• English/Chinese → Khmer\n"
+        "• Khmer → Korean / Japanese / Filipino\n"
         "• 🖼 Screenshot OCR Translate\n"
         "• ✏️ Grammar Correction: `/kmgrammar`, `/enggrammar`, `/cngrammar`\n"
         "• 🔍 Explain sentence: `/explain ...`\n"
@@ -505,14 +507,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     msg = (
-        "📖 **ជំនួយប្រើ AI Language Tutor Bot**\n\n"
-        "🌐 Translation Modes\n"
-        "• `🇰🇭 → 🇺🇸🇨🇳 (Learner)` – Khmer → English+Chinese\n"
-        "• `🇺🇸/🇨🇳 → 🇰🇭 (Foreigner)` – English/Chinese → Khmer\n"
-        "• `🇰🇭 → 🇰🇷 (Korean)` – Khmer → Korean\n"
-        "• `🇰🇭 → 🇯🇵 (Japanese)` – Khmer → Japanese\n"
-        "• `🇰🇭 → 🇵🇭 (Filipino)` – Khmer → Filipino\n"
-        "• `/mode learner`, `/mode foreigner`, `/mode korean`, `/mode japanese`, `/mode filipino`, `/mode auto`\n\n"
+        "📖 **AI Language Tutor Bot – Help Guide**\n\n"
+        "🌐 Translation Commands\n"
+        "• `/mode learner`   – Khmer → English + Chinese\n"
+        "• `/mode foreigner` – English/Chinese → Khmer\n"
+        "• `/mode korean`    – Khmer → Korean (mode)\n"
+        "• `/mode japanese`  – Khmer → Japanese (mode)\n"
+        "• `/mode filipino`  – Khmer → Filipino (mode)\n"
+        "• `/ko` text        – Quick Khmer → Korean\n"
+        "• `/ja` text        – Quick Khmer → Japanese\n"
+        "• `/ph` text        – Quick Khmer → Filipino\n\n"
         "✏️ Grammar Correction\n"
         "• Khmer: `/kmgrammar ប្រយោគភាសាខ្មែរ...`\n"
         "• English: `/enggrammar your English sentence...`\n"
@@ -521,12 +525,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• `/explain sentence` – ពន្យល់អត្ថន័យ + vocab + examples ជាភាសាខ្មែរ\n\n"
         "👤 User Tools\n"
         "• `/profile` – ព័ត៌មានអំពី account របស់អ្នកក្នុង bot\n"
-        "• `/reset` – កំណត់ Mode និង counter សារឡើងវិញ\n\n"
+        "• `/reset` – កំណត់ Mode និង counter សារឡើងវិញ\n"
+        "• `/menu` – បង្ហាញប៊ូតុងមេឡើងវិញ\n\n"
         "🖼 Screenshot OCR\n"
         "• ផ្ញើ screenshot/រូបមានអក្សរ → Bot អាន OCR + បកប្រែ\n\n"
         "📩 Feedback\n"
         "• `/feedback សារ​របស់​អ្នក`\n\n"
-        "Admin only: `/stats`, `/broadcast text`"
+        "🛠 Admin only\n"
+        "• `/broadcast text` – Send announcement to all users\n"
+        "• `/stats` – View bot statistics\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -772,7 +779,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # ==================================================
-# 7. GRAMMAR & EXPLAIN COMMANDS
+# 7. GRAMMAR, EXPLAIN & LANGUAGE SHORT COMMANDS
 # ==================================================
 
 
@@ -846,6 +853,60 @@ async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await update.message.reply_text("🔍 កំពុងពន្យល់ប្រយោគរបស់អ្នក...")
     reply = await chat_with_system_prompt(PROMPT_EXPLAIN, text)
+    await send_long_message(update, reply)
+
+
+async def ko_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick Khmer → Korean translation."""
+    if not update.message:
+        return
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "ប្រើ៖ `/ko ប្រយោគភាសាខ្មែររបស់អ្នក`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("🇰🇷 កំពុងបកប្រែទៅភាសាកូរ៉េ...")
+    reply = await chat_with_system_prompt(PROMPT_KOREAN_LEARNER, text)
+    await send_long_message(update, reply)
+
+
+async def ja_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick Khmer → Japanese translation."""
+    if not update.message:
+        return
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "ប្រើ៖ `/ja ប្រយោគភាសាខ្មែររបស់អ្នក`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("🇯🇵 កំពុងបកប្រែទៅភាសាជប៉ុន...")
+    reply = await chat_with_system_prompt(PROMPT_JAPANESE_LEARNER, text)
+    await send_long_message(update, reply)
+
+
+async def ph_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick Khmer → Filipino translation."""
+    if not update.message:
+        return
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "ប្រើ៖ `/ph ប្រយោគភាសាខ្មែររបស់អ្នក`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("🇵🇭 កំពុងបកប្រែទៅភាសាហ្វីលីពីន...")
+    reply = await chat_with_system_prompt(PROMPT_FILIPINO_LEARNER, text)
     await send_long_message(update, reply)
 
 
@@ -1097,11 +1158,14 @@ def main() -> None:
     app.add_handler(CommandHandler("profile", profile_command))
     app.add_handler(CommandHandler("reset", reset_command))
 
-    # Grammar & explain commands
+    # Grammar, explain & quick language commands
     app.add_handler(CommandHandler("kmgrammar", kmgrammar_command))
     app.add_handler(CommandHandler("enggrammar", enggrammar_command))
     app.add_handler(CommandHandler("cngrammar", cngrammar_command))
     app.add_handler(CommandHandler("explain", explain_command))
+    app.add_handler(CommandHandler("ko", ko_command))
+    app.add_handler(CommandHandler("ja", ja_command))
+    app.add_handler(CommandHandler("ph", ph_command))
 
     # Photos (screenshots)
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
