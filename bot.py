@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 AI Language Tutor Telegram Bot
-Khmer ⇄ English ⇄ Chinese + OCR + Grammar Tools + Extra Features
+Khmer ⇄ English ⇄ Chinese + OCR + Grammar Tools + Tagalog (/ph)
 
 Author: Kobsari (refactored + improved by ChatGPT)
 """
@@ -279,6 +279,57 @@ Output format (Khmer UI):
 --------------------------------
 """
 
+# Tagalog / Filipino grammar prompt (used by /phgrammar)
+PROMPT_PH_GRAMMAR = """
+You are an expert Filipino (Tagalog) grammar tutor.
+
+Task:
+- Correct grammar, spelling, and word order of the Tagalog sentence.
+- Keep the meaning natural.
+- Explain the corrections in Khmer (simple Khmer).
+
+Output format:
+--------------------------------
+✍️ Original (Tagalog):
+[Original text]
+
+✅ Corrected (Tagalog):
+[Corrected sentence]
+
+📝 Explanation in Khmer:
+- [Point 1]
+- [Point 2]
+--------------------------------
+"""
+
+# Tagalog ↔ Khmer translate prompt (used by /ph)
+PROMPT_PH_TRANSLATE = """
+You are a Filipino (Tagalog) ↔ Khmer translation teacher.
+
+You must:
+1. Detect if the input is Tagalog or Khmer.
+2. Translate it to the other language.
+3. Provide a pronunciation guide.
+4. Give 1 short usage example.
+
+Output format:
+--------------------------------
+🔁 Translation Result
+
+🇵🇭 Tagalog:
+[Tagalog sentence]
+
+🗣️ Pronunciation (write Tagalog sound using Khmer script or Latin letters):
+[Pronunciation]
+
+🇰🇭 Khmer:
+[Khmer translation]
+
+📝 Example:
+[Example sentence] → [Khmer meaning]
+--------------------------------
+"""
+
 # ==================================================
 # 4. HELPER FUNCTIONS
 # ==================================================
@@ -427,7 +478,7 @@ def schedule_daily_jobs(jq) -> None:
     jq.run_daily(
         send_scheduled_alert,
         time=dt_time(7, 0, tzinfo=TIMEZONE),
-        data="☀️ អរុណសួស្តី! Good morning! ប្រ្ដើមថ្ងៃថ្មីឲ្យមានការសប្បាយរីករាយបំផុតណា 😄",
+        data="☀️ អរុណសួស្តី! Good morning! ព្រឹកថ្ងៃថ្មីឲ្យមានការសប្បាយរីករាយបំផុតណា 😄",
         name="morning_greeting",
     )
 
@@ -467,12 +518,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     msg = (
         f"👋 **សួស្តី {user.first_name}! សូមស្វាគមន៍មកកាន់ AI Language Tutor!**\n\n"
-        "👨‍🏫 **ខ្ញុំអាចជួយអ្នករៀនភាសា អង់គ្លេស និង ចិន។**\n\n"
+        "👨‍🏫 **ខ្ញុំអាចជួយអ្នករៀនភាសា អង់គ្លេស ចិន និង Tagalog (Filipino)។**\n\n"
         "📚 **មុខងារសំខាន់ៗ:**\n"
         "• 🇰🇭 → 🇺🇸🇨🇳  Khmer Learner Mode\n"
         "• 🇺🇸/🇨🇳 → 🇰🇭 Foreigner Mode\n"
         "• 🖼 Screenshot OCR Translate\n"
-        "• ✏️ Grammar Correction: `/kmgrammar`, `/enggrammar`, `/cngrammar`\n"
+        "• ✏️ Grammar: `/kmgrammar`, `/enggrammar`, `/cngrammar`, `/phgrammar`\n"
+        "• 🇵🇭 Tagalog ↔ Khmer: `/ph ...`\n"
         "• 🔍 Explain sentence: `/explain ...`\n"
         "• 👤 Profile: `/profile`\n"
         "• ♻️ Reset: `/reset`\n\n"
@@ -501,7 +553,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "✏️ Grammar Correction\n"
         "• Khmer: `/kmgrammar ប្រយោគភាសាខ្មែរ...`\n"
         "• English: `/enggrammar your English sentence...`\n"
-        "• Chinese: `/cngrammar 你的中文句子...`\n\n"
+        "• Chinese: `/cngrammar 你的中文句子...`\n"
+        "• Tagalog: `/phgrammar iyong pangungusap`\n\n"
+        "🇵🇭 Tagalog ↔ Khmer Translation\n"
+        "• `/ph pangungusap`  (input Tagalog or Khmer)\n\n"
         "🔍 Sentence Explanation\n"
         "• `/explain sentence` – ពន្យល់អត្ថន័យ + vocab + examples ជាភាសាខ្មែរ\n\n"
         "👤 User Tools\n"
@@ -523,11 +578,12 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     msg = (
         "ℹ️ **About AI Language Tutor Bot**\n\n"
-        "• Khmer ⇄ English ⇄ Chinese tutor\n"
+        "• Khmer ⇄ English ⇄ Chinese ⇄ Tagalog tutor\n"
         "• Screenshot OCR via Groq Vision\n"
-        "• Grammar correction (Khmer, English, Chinese)\n"
+        "• Grammar correction (Khmer, English, Chinese, Tagalog)\n"
         "• Sentence explanation tool (`/explain`)\n"
-        "• Auto-detect mode\n"
+        "• Auto-detect mode (Khmer vs EN/CN)\n"
+        "• Tagalog commands style: `/ph`, `/phgrammar`\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -805,6 +861,45 @@ async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await send_long_message(update, reply)
 
 
+# --- Tagalog specific commands using /ph ---
+
+
+async def phgrammar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tagalog grammar correction (command: /phgrammar)."""
+    if not update.message:
+        return
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "Gamitin: `/phgrammar iyong pangungusap` (Your Tagalog sentence)",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("✏️ Checking Tagalog grammar...")
+    reply = await chat_with_system_prompt(PROMPT_PH_GRAMMAR, text)
+    await send_long_message(update, reply)
+
+
+async def ph_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Translate Tagalog ↔ Khmer (command: /ph)."""
+    if not update.message:
+        return
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "Gamitin: `/ph pangungusap`  ឬ `/ph ប្រយោគខ្មែរ`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await update.message.reply_text("🇵🇭↔🇰🇭 Translating...")
+    reply = await chat_with_system_prompt(PROMPT_PH_TRANSLATE, text)
+    await send_long_message(update, reply)
+
+
 # ==================================================
 # 8. PHOTO HANDLER (VISION OCR)
 # ==================================================
@@ -943,7 +1038,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "✏️ **Grammar Tools**\n\n"
             "• Khmer: `/kmgrammar ប្រយោគភាសាខ្មែរ...`\n"
             "• English: `/enggrammar your English sentence...`\n"
-            "• Chinese: `/cngrammar 你的中文句子...`",
+            "• Chinese: `/cngrammar 你的中文句子...`\n"
+            "• Tagalog: `/phgrammar iyong pangungusap`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -1038,6 +1134,10 @@ def main() -> None:
     app.add_handler(CommandHandler("cngrammar", cngrammar_command))
     app.add_handler(CommandHandler("explain", explain_command))
 
+    # Tagalog commands (using /ph style)
+    app.add_handler(CommandHandler("phgrammar", phgrammar_command))
+    app.add_handler(CommandHandler("ph", ph_command))
+
     # Photos (screenshots)
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
@@ -1051,7 +1151,7 @@ def main() -> None:
     jq = app.job_queue
     schedule_daily_jobs(jq)
 
-    logger.info("✅ Bot is running with Scheduler...")
+    logger.info("✅ Bot is running with Scheduler and Tagalog /ph support...")
     app.run_polling(drop_pending_updates=True)
 
 
