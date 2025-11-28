@@ -341,15 +341,31 @@ def is_admin(chat_id: int) -> bool:
 
 
 def load_users() -> Set[int]:
-    """Load registered user chat_ids from USERS_FILE."""
+    """Load registered user chat_ids from USERS_FILE.
+
+    If the file is missing or corrupted, auto-fix it to an empty list [].
+    """
+    # If file doesn't exist → create empty []
     if not os.path.exists(CONFIG.users_file):
+        try:
+            with open(CONFIG.users_file, "w", encoding="utf-8") as f:
+                f.write("[]")
+        except Exception as e:
+            logger.error("Failed to create users file: %s", e)
         return set()
+
     try:
         with open(CONFIG.users_file, "r", encoding="utf-8") as f:
             data = json.load(f)
             return set(int(x) for x in data)
     except Exception as e:
-        logger.warning("Failed to load users file: %s", e)
+        # Corrupted JSON or other error → auto repair
+        logger.warning("Failed to load users file (will reset): %s", e)
+        try:
+            with open(CONFIG.users_file, "w", encoding="utf-8") as f:
+                f.write("[]")
+        except Exception as e2:
+            logger.error("Failed to repair users file: %s", e2)
         return set()
 
 
@@ -478,7 +494,7 @@ def schedule_daily_jobs(jq) -> None:
     jq.run_daily(
         send_scheduled_alert,
         time=dt_time(7, 0, tzinfo=TIMEZONE),
-        data="☀️ អរុណសួស្តី! Good morning! ព្រឹកថ្ងៃថ្មីឲ្យមានការសប្បាយរីករាយបំផុតណា 😄",
+        data="☀️ អរុណសួស្តី! Good morning! ប្រ្ដើមថ្ងៃថ្មីឲ្យមានការសប្បាយរីករាយបំផុតណា 😄",
         name="morning_greeting",
     )
 
